@@ -1,12 +1,12 @@
 # JMComic-Downloader-GUI
 
-Windows 图形化批量下载器：支持车号/链接输入、无额外有损的 PDF 整合、校验后自动清理中间图片，以及 Chromium 浏览器标签页批量收集。
+Windows 图形化批量下载器：支持车号/链接输入，多线程同步下载图片，几乎无损的 PDF 整合，以及附带了 Chromium 浏览器标签页批量收集插件。
 
 > 本项目是 `hect0x7/JMComic-Crawler-Python` 的非官方衍生版本，不属于 JMComic、18comic 或上游作者的官方发行版。上游来源与修改说明见 [UPSTREAM.md](UPSTREAM.md)。
 
 ## 下载
 
-普通 Windows 用户无需安装 Python。请前往 GitHub 仓库的 **Releases** 页面，下载：
+请前往 GitHub 仓库的 **Releases** 页面，下载：
 
 ```text
 JMComic-Downloader-GUI-1.2.0-Windows-x64.zip
@@ -18,13 +18,16 @@ JMComic-Downloader-GUI-1.2.0-Windows-x64.zip
 JMComic-Downloader-GUI.exe
 ```
 
-Release 同时提供 `.sha256.txt` 校验文件。Windows SmartScreen 或杀毒软件可能对未签名的 PyInstaller 程序显示提示；请只从正式 Release 下载并核对 SHA256，不要关闭杀毒软件。
+使用说明见解压后的 “使用说明.md”
+
+附：Release 同时提供 `.sha256.txt` 校验文件。Windows SmartScreen 或杀毒软件可能对未签名的 PyInstaller 程序显示提示；请从正式 Release 下载并核对 SHA256。
 
 ## 主要功能
 
 - Windows 10/11 图形界面，无需命令行。
 - 支持单个或批量输入 JM 车号、`JM车号`、详情页链接。
 - 支持完整本子和单独章节下载。
+- 使用多线程并发下载：可分别设置图片并发和章节并发，批量车号也支持并行处理。
 - 默认保持图片原格式，不缩小分辨率。
 - JPEG 等格式可直接写入 PDF 时不进行二次有损压缩。
 - PDF 生成后校验页数，校验成功才删除对应中间图片。
@@ -54,7 +57,6 @@ Release 同时提供 `.sha256.txt` 校验文件。Windows SmartScreen 或杀毒�
 1455254
 JM1455254
 https://devapp.18comic.cc/comic/detail?id=1455254
-https://example.com/album/1455254
 ```
 
 当前“本子/章节”选择会应用于整批输入。本子与章节请分批下载。
@@ -67,7 +69,7 @@ https://example.com/album/1455254
 - 多章节本子生成 `本子名 - 第N话 章节名.pdf`。
 - 每个章节 PDF 页数校验成功后，才删除该章节的中间图片。
 
-“无额外有损”不代表原始站点图片本身是无损格式，也不代表生成后的 PDF 一定更小。
+“几乎无损”不代表原始站点图片本身是无损格式，也不代表生成后的 PDF 一定更小。
 
 ## 浏览器扩展
 
