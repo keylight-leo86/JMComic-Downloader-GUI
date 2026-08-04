@@ -2,7 +2,7 @@
 
 Windows 图形化批量下载器：支持车号/链接输入，多线程同步下载图片，几乎无损的 PDF 整合，以及附带了 Chromium 浏览器标签页批量收集插件。
 
-> 本项目是 `hect0x7/JMComic-Crawler-Python` 的非官方衍生版本，不属于 JMComic、18comic 或上游作者的官方发行版。上游来源与修改说明见 [UPSTREAM.md](UPSTREAM.md)。
+> 本项目基于对开源项目 `hect0x7/JMComic-Crawler-Python` 进行的二次开发，保留上游项目的 MIT License 及原作者 hect0x7 的版权声明，并在此基础上新增了 Windows GUI、多线程下载、PDF 整合和浏览器扩展等功能。不属于 JMComic、18comic 或上游作者的官方发行版。上游来源与修改说明见 [UPSTREAM.md](UPSTREAM.md)。
 
 ## 下载
 
