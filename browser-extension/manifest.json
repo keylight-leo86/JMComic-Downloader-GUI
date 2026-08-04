@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "JMComic Downloader GUI 标签页复制器",
+  "version": "1.0.2",
+  "description": "一键收集当前窗口中的 JM 本子和章节标签页，并按行复制链接或车号。",
+  "permissions": [
+    "tabs",
+    "clipboardWrite"
+  ],
+  "action": {
+    "default_title": "为 JMComic Downloader GUI 复制当前窗口的 JM 标签页",
+    "default_popup": "popup.html"
+  }
+}

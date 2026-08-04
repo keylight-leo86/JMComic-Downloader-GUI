@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.manifest
+*.exe
+*.msi
+*.zip
+*.7z
+*.tar
+*.gz
+*.sha256
+
+# User downloads and generated media
+/下载/
+/downloads/
+/PDF/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+
+# Runtime and local settings
+*.log
+.env
+.env.*
+settings.json
+*.local.yml
+*.local.yaml
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Release staging
+/release/
+/release-assets/

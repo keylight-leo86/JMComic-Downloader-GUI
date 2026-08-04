@@ -1,0 +1,15 @@
+commonX==0.6.40
+certifi==2026.7.22
+cffi==2.1.0
+charset-normalizer==3.4.9
+curl_cffi==0.16.0
+idna==3.18
+img2pdf==0.6.3
+Pillow==12.3.0
+pycryptodome==3.23.0
+pycparser==3.0
+pypdf==6.14.2
+PyInstaller==6.21.0
+PyYAML==6.0.3
+requests==2.32.5
+urllib3==2.7.0

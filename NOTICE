@@ -1,0 +1,10 @@
+JMComic-Downloader-GUI
+
+This project is a derivative work based on JMComic-Crawler-Python.
+Upstream copyright:
+Copyright (c) 2023 hect0x7
+
+The upstream MIT License is preserved in LICENSE.
+Modifications and additional GUI, PDF export, browser extension, packaging,
+documentation, and tests:
+Copyright (c) 2026 JMComic-Downloader-GUI contributors

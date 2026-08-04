@@ -1,0 +1,39 @@
+name: Bug report
+description: 报告 GUI、PDF、构建或浏览器扩展问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请勿上传账号、密码、Cookie、Token、下载内容或成人内容截图。请先对日志和路径进行脱敏。
+  - type: dropdown
+    id: component
+    attributes:
+      label: 问题模块
+      options:
+        - Windows GUI / EXE
+        - PDF 转换
+        - 浏览器扩展
+        - 下载核心
+        - 构建脚本
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 例如 1.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述与复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏的日志
+      render: text

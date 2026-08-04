@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JMComic Downloader GUI 标签页复制器</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>JM 标签页复制器</h1>
+          <p id="summary">正在扫描当前窗口……</p>
+        </div>
+        <button id="refresh" class="icon-button" type="button" title="重新扫描">↻</button>
+      </header>
+
+      <section class="actions" aria-label="复制操作">
+        <button id="copy-links" class="primary" type="button" disabled>复制链接</button>
+        <button id="copy-ids" type="button" disabled>复制车号</button>
+      </section>
+
+      <p id="status" role="status" aria-live="polite"></p>
+
+      <section class="preview-section">
+        <div class="preview-header">
+          <span>预览（一行一项）</span>
+          <span id="counts"></span>
+        </div>
+        <textarea id="preview" readonly spellcheck="false" placeholder="没有识别到 JM 页面"></textarea>
+      </section>
+
+      <p class="hint">支持 <code>/comic/detail?id=车号</code>、<code>/album/车号</code> 和 <code>/photo/车号</code>；重复页面会自动去重。</p>
+    </main>
+    <script src="extractor.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
