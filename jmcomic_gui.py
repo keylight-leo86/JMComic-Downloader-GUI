@@ -45,6 +45,33 @@ def app_directory() -> Path:
     return Path(__file__).resolve().parent
 
 
+def default_download_directory() -> Path:
+    return app_directory() / "下载"
+
+
+def paths_equal(left: str | Path, right: str | Path) -> bool:
+    return os.path.normcase(os.path.abspath(os.fspath(left))) == os.path.normcase(
+        os.path.abspath(os.fspath(right))
+    )
+
+
+def initial_output_directory(settings: dict) -> Path:
+    default = default_download_directory()
+    saved = str(settings.get("output", "") or "").strip()
+    output_mode = settings.get("output_mode")
+
+    if output_mode == "custom" and saved:
+        return Path(saved)
+    if output_mode == "default":
+        return default
+
+    # 兼容旧设置：旧版会把程序目录下的“下载”绝对路径写入设置。
+    # 程序被移动或重新解压后，应让这种旧默认值跟随新的 EXE 目录。
+    if saved and Path(saved).name != "下载":
+        return Path(saved)
+    return default
+
+
 def settings_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
@@ -442,9 +469,7 @@ class JMComicApp:
         self.settings = self._load_settings()
 
         self.mode_var = tk.StringVar(value=self.settings.get("mode", "album"))
-        self.output_var = tk.StringVar(
-            value=self.settings.get("output", str(app_directory() / "下载"))
-        )
+        self.output_var = tk.StringVar(value=str(initial_output_directory(self.settings)))
         self.client_var = tk.StringVar(value=self.settings.get("client", "移动端 API（推荐）"))
         self.format_var = tk.StringVar(value=self.settings.get("format", "保持原格式"))
         self.image_threads_var = tk.IntVar(value=self.settings.get("image_threads", 20))
@@ -630,9 +655,12 @@ class JMComicApp:
         return {}
 
     def _save_settings(self):
+        output = self.output_var.get().strip()
+        uses_default_output = not output or paths_equal(output, default_download_directory())
         data = {
             "mode": self.mode_var.get(),
-            "output": self.output_var.get().strip(),
+            "output_mode": "default" if uses_default_output else "custom",
+            "output": "" if uses_default_output else output,
             "client": self.client_var.get(),
             "format": self.format_var.get(),
             "image_threads": self.image_threads_var.get(),
@@ -663,7 +691,7 @@ class JMComicApp:
             self.option_var.set(selected)
 
     def _open_output(self):
-        path = Path(self.output_var.get().strip() or app_directory() / "下载") / "PDF"
+        path = Path(self.output_var.get().strip() or default_download_directory()) / "PDF"
         try:
             path.mkdir(parents=True, exist_ok=True)
             os.startfile(str(path))

@@ -39,6 +39,7 @@ Release 同时提供 `.sha256.txt` 校验文件。Windows SmartScreen 或杀毒�
 3. 粘贴一个或多个车号/链接，支持空格、逗号、分号或换行分隔。
 4. 选择保存位置。
 5. 一般保持默认设置：
+   - 保存位置：EXE 所在文件夹下的 `下载`
    - 客户端：移动端 API（推荐）
    - 图片格式：保持原格式
    - 图片并发：20
@@ -147,6 +148,7 @@ JMComic-Downloader-GUI/
 ## 隐私、安全与法律
 
 - 不要在 Issue 中上传账号、密码、Cookie、Token、完整个人路径、下载文件或成人内容截图。
+- 默认保存位置始终跟随当前 EXE，使用其所在文件夹下的 `下载`；手动选择的自定义位置会继续保留。
 - 设置保存在 `%LOCALAPPDATA%\JMComic-Downloader-GUI\settings.json`，首次运行会兼容读取旧版 `%LOCALAPPDATA%\JMComicDownloader\settings.json`。
 - 本仓库不托管、不提供任何漫画或媒体内容。
 - 请仅下载你有权访问和保存的内容，并遵守所在地法律、网站条款和版权要求。

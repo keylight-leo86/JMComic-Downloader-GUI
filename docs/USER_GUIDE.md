@@ -29,6 +29,7 @@ https://devapp.18comic.cc/comic/detail?id=1455254
 
 ## 3. 默认设置
 
+- 保存位置：当前 `JMComic-Downloader-GUI.exe` 所在文件夹下的 `下载`
 - 客户端：移动端 API（推荐）
 - 图片格式：保持原格式
 - 图片并发：20
@@ -87,6 +88,8 @@ https://devapp.18comic.cc/comic/detail?id=1455254
 ```
 
 删除该设置文件可恢复默认值，不会删除已下载 PDF。
+
+默认保存位置会随 EXE 所在文件夹变化；只有手动选择的自定义保存位置才会跨启动保留。
 
 ## 7. 使用边界
 

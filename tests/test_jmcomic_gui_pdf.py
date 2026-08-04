@@ -2,11 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image
 from pypdf import PdfReader
 
-from jmcomic_gui import export_result_pdfs, pdf_filename_for_photo
+from jmcomic_gui import export_result_pdfs, initial_output_directory, pdf_filename_for_photo
 
 
 class FakeImage:
@@ -53,6 +54,33 @@ class FakeOption:
     @staticmethod
     def decide_image_filepath(image):
         return image.save_path
+
+
+class TestGuiDefaultOutput(unittest.TestCase):
+    def test_default_output_follows_current_application_directory(self):
+        with patch("jmcomic_gui.app_directory", return_value=Path("C:/Apps/JMComic-Downloader-GUI")):
+            self.assertEqual(
+                initial_output_directory({}),
+                Path("C:/Apps/JMComic-Downloader-GUI/下载"),
+            )
+
+    def test_saved_default_moves_with_application(self):
+        settings = {"output_mode": "default", "output": "D:/Old/下载"}
+        with patch("jmcomic_gui.app_directory", return_value=Path("E:/New/JMComic-Downloader-GUI")):
+            self.assertEqual(
+                initial_output_directory(settings),
+                Path("E:/New/JMComic-Downloader-GUI/下载"),
+            )
+
+    def test_custom_output_is_preserved(self):
+        settings = {"output_mode": "custom", "output": "D:/Comics"}
+        with patch("jmcomic_gui.app_directory", return_value=Path("E:/App")):
+            self.assertEqual(initial_output_directory(settings), Path("D:/Comics"))
+
+    def test_legacy_default_output_is_migrated(self):
+        settings = {"output": "D:/OldPackage/下载"}
+        with patch("jmcomic_gui.app_directory", return_value=Path("E:/NewPackage")):
+            self.assertEqual(initial_output_directory(settings), Path("E:/NewPackage/下载"))
 
 
 class TestGuiPdfExport(unittest.TestCase):
