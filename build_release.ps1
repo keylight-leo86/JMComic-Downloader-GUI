@@ -8,6 +8,8 @@ $stagingRoot = Join-Path $releaseRoot $assetBase
 $zipPath = Join-Path $releaseRoot "$assetBase.zip"
 $zipHashPath = "$zipPath.sha256.txt"
 $exePath = Join-Path $PSScriptRoot 'JMComic-Downloader-GUI.exe'
+$downloadDirName = -join @([char]0x4E0B, [char]0x8F7D)
+$userGuideName = (-join @([char]0x4F7F, [char]0x7528, [char]0x8BF4, [char]0x660E)) + '.md'
 
 if (-not (Test-Path -LiteralPath $exePath)) {
     throw "Missing EXE: $exePath. Run .\build_exe.ps1 first."
@@ -23,13 +25,13 @@ if (Test-Path -LiteralPath $zipPath) {
 New-Item -ItemType Directory -Path $stagingRoot | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stagingRoot 'browser-extension') | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stagingRoot 'licenses') | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $stagingRoot '下载\PDF') | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stagingRoot (Join-Path $downloadDirName 'PDF')) | Out-Null
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $stagingRoot 'JMComic-Downloader-GUI.exe')
 foreach ($name in @('README.md', 'LICENSE', 'NOTICE', 'UPSTREAM.md', 'THIRD_PARTY_NOTICES.md', 'DISCLAIMER.md')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $stagingRoot $name)
 }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs\USER_GUIDE.md') -Destination (Join-Path $stagingRoot '使用说明.md')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs\USER_GUIDE.md') -Destination (Join-Path $stagingRoot $userGuideName)
 $licenseSource = Join-Path $PSScriptRoot 'third_party_licenses'
 if (-not (Test-Path -LiteralPath $licenseSource)) {
     throw "Missing license directory: $licenseSource"
