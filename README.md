@@ -155,6 +155,10 @@ JMComic-Downloader-GUI/
 
 详情见 [SECURITY.md](SECURITY.md) 与 [DISCLAIMER.md](DISCLAIMER.md)。
 
+## 开发辅助工具
+
+本项目开发过程中使用了 `gpt5.6-sol` 作为开发辅助工具。
+
 ## 许可证
 
 本项目保留上游 MIT License 与以下原始版权声明：
