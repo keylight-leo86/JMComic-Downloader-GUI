@@ -10,6 +10,10 @@ pycryptodome==3.23.0
 pycparser==3.0
 pypdf==6.14.2
 PyInstaller==6.21.0
+# 桌面壳：pywebview(WebView2) + winforms 后端链（pythonnet/clr-loader）
+pywebview==6.2.1
+pythonnet==3.1.0
+clr-loader==0.3.1  # pythonnet 3.1.0 要求 >=0.3.1,<0.4；0.3 移除 get_netfx 仅影响 pythonnet 3.0.x（勿配 0.2.x，pip 会 ResolutionImpossible）
 PyYAML==6.0.3
 requests==2.32.5
 urllib3==2.7.0

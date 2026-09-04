@@ -30,9 +30,9 @@ jobs:
       - name: Install
         run: python -m pip install -e ".[test]"
       - name: Syntax check
-        run: python -m compileall -q jmcomic_gui.py src
-      - name: Run offline PDF tests
-        run: python -m unittest tests.test_jmcomic_gui_pdf
+        run: python -m compileall -q jmcomic_gui.py run_gui.py gui src
+      - name: Run offline tests
+        run: python -m unittest tests.test_jmcomic_gui_pdf tests.test_jm_api
 
   browser-extension:
     runs-on: ubuntu-latest

@@ -44,6 +44,10 @@ settings.json
 *.local.yml
 *.local.yaml
 
+# GUI runtime cache（pywebview WebView2 / QtWebEngine）
+.webview2-cache/
+.qtwebengine-cache/
+
 # Editors and OS
 .idea/
 .vscode/

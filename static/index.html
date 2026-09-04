@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JMComic Downloader GUI</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="app">
+
+  <header class="titlebar">
+    <div class="titlebar-left">
+      <div class="app-mark" aria-hidden="true"></div>
+      <span class="app-name">JMComic 下载器</span>
+      <span class="app-tag">GUI · 无损 PDF · 在线预览</span>
+    </div>
+    <div class="titlebar-right">
+      <span id="net-badge" class="net-badge" data-state="unknown">连接中…</span>
+      <button class="win-btn" id="win-min" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 12 12"><path d="M1.5 6h9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+      </button>
+      <button class="win-btn" id="win-max" title="最大化/还原" aria-label="最大化或还原">
+        <svg class="ico-max" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+        <svg class="ico-restore" viewBox="0 0 12 12"><rect x="2" y="4.1" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.1 4.1V2.9A.9.9 0 0 1 5 2h5.1a.9.9 0 0 1 .9.9V8a.9.9 0 0 1-.9.9H9.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </button>
+      <button class="win-btn win-close" id="win-close" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <aside class="sidebar">
+      <nav class="side-nav" id="side-nav">
+        <div class="nav-group-label">浏览</div>
+        <button class="nav-item is-active" data-view="preview">
+          <span class="nav-dot"></span><span class="nav-text">在线预览</span>
+        </button>
+        <button class="nav-item" data-view="download">
+          <span class="nav-dot"></span><span class="nav-text">下载任务</span>
+        </button>
+        <button class="nav-item" data-view="history">
+          <span class="nav-dot"></span><span class="nav-text">下载历史</span>
+        </button>
+        <div class="nav-group-label">其他</div>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-dot"></span><span class="nav-text">设置</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="foot-version" id="foot-version">…</span>
+      </div>
+    </aside>
+
+    <main class="content">
+
+      <section class="view is-active" id="view-preview" data-view="preview">
+        <div class="view-head pv-head">
+          <h1>在线预览</h1>
+          <p class="view-sub">关键词搜索 → 本子结果 → 章节列表 → 在线看图；详情页可一键发起下载，预览图片由本地服务代理解码，不写入下载目录</p>
+        </div>
+        <div class="search-bar">
+          <input id="preview-keyword" class="search-input" type="text"
+                 placeholder="输入关键词 / 作者 / 车号"
+                 autocomplete="off" spellcheck="false">
+          <button class="btn btn-primary" id="preview-go">
+            <span class="btn-icon" aria-hidden="true"></span>搜索预览
+          </button>
+        </div>
+
+        <div id="pv-zone">
+          <!-- 首页：空态与搜索历史 -->
+          <div class="pv-page" id="pv-home">
+            <div class="pv-empty">
+              <div class="pv-empty-cover" aria-hidden="true">
+                <span class="pv-empty-mark"></span>
+              </div>
+              <p class="pv-empty-title">从一次搜索开始</p>
+              <p class="pv-empty-text">输入任意关键词即可在禁漫图库中检索；纯数字会被识别为车号，直接打开对应本子。</p>
+              <div class="pv-history" id="pv-history"></div>
+            </div>
+          </div>
+
+          <!-- 搜索结果 -->
+          <div class="pv-page" id="pv-results" hidden>
+            <div class="pv-toolbar">
+              <button class="pv-back" data-back="1" title="返回首页"><span class="pv-back-arrow"></span>返回</button>
+              <div class="pv-toolbar-mid" id="pv-results-meta"></div>
+            </div>
+            <div class="pv-grid" id="pv-grid"></div>
+            <div class="pv-more-row" id="pv-more-row" hidden>
+              <button class="btn btn-ghost" id="pv-load-more">加载更多</button>
+            </div>
+          </div>
+
+          <!-- 本子详情 -->
+          <div class="pv-page" id="pv-detail" hidden></div>
+
+          <!-- 章节阅读器 -->
+          <div class="pv-page" id="pv-reader" hidden></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-download" data-view="download">
+        <div class="view-head">
+          <h1>下载任务</h1>
+          <p class="view-sub">粘贴车号或章节 ID，配置客户端与并发，提交后实时显示进度与日志</p>
+        </div>
+
+        <form class="dlv-form" id="dlv-form" autocomplete="off">
+          <div class="dlv-row dlv-row-ids">
+            <label class="dlv-label" for="dlv-ids">车号 / 章节 ID</label>
+            <textarea id="dlv-ids" class="dlv-input dlv-ids" rows="3"
+                      placeholder="支持空格、逗号、换行分隔，例如：1455254, 1002, https://devapp.18comic.cc/comic/detail?id=1455254"></textarea>
+          </div>
+          <div class="dlv-row dlv-row-mode">
+            <label class="dlv-label">下载类型</label>
+            <div class="dlv-seg" role="tablist" id="dlv-kind">
+              <button type="button" class="dlv-seg-item is-active" data-kind="album">本子</button>
+              <button type="button" class="dlv-seg-item" data-kind="photo">章节</button>
+            </div>
+          </div>
+          <div class="dlv-row dlv-row-opts">
+            <div class="dlv-opts">
+              <label class="dlv-field"><span>客户端</span>
+                <select id="dlv-client" class="dlv-input">
+                  <option value="api">移动端 API（推荐）</option>
+                  <option value="html">网页端（不稳定）</option>
+                </select>
+              </label>
+              <label class="dlv-field"><span>图片格式</span>
+                <select id="dlv-image-format" class="dlv-input">
+                  <option value="original">保持原格式</option>
+                  <option value="jpg">jpg</option>
+                  <option value="png">png</option>
+                  <option value="webp">webp</option>
+                </select>
+              </label>
+              <label class="dlv-field"><span>图片并发</span>
+                <input id="dlv-image-threads" type="number" min="1" max="64" value="20" class="dlv-input">
+              </label>
+              <label class="dlv-field"><span>章节并发</span>
+                <input id="dlv-photo-threads" type="number" min="1" max="16" value="4" class="dlv-input">
+              </label>
+              <label class="dlv-field dlv-field-grow"><span>代理</span>
+                <input id="dlv-proxy" type="text" placeholder="留空 = 跟随系统" class="dlv-input">
+              </label>
+            </div>
+          </div>
+          <div class="dlv-row dlv-row-submit">
+            <button type="submit" class="btn btn-primary" id="dlv-submit">
+              <span class="btn-icon" aria-hidden="true"></span>开始下载
+            </button>
+            <span class="dlv-hint" id="dlv-hint">…</span>
+          </div>
+        </form>
+
+        <div class="dlv-list" id="dlv-list" hidden>
+          <div class="dlv-list-head">
+            <h3>任务</h3>
+            <span class="dlv-list-meta" id="dlv-list-meta"></span>
+            <button type="button" class="btn btn-ghost btn-sm" id="dlv-refresh">刷新</button>
+          </div>
+          <ul class="dlv-tasks" id="dlv-tasks"></ul>
+        </div>
+      </section>
+
+      <section class="view" id="view-history" data-view="history">
+        <div class="view-head">
+          <h1>下载历史</h1>
+          <p class="view-sub">最近提交的任务记录，可一键重下</p>
+        </div>
+
+        <div class="dlv-list" id="hst-list" hidden>
+          <div class="dlv-list-head">
+            <h3>任务记录</h3>
+            <span class="dlv-list-meta" id="hst-meta"></span>
+            <button type="button" class="btn btn-ghost btn-sm" id="hst-clear">清空历史</button>
+          </div>
+          <ul class="hst-items" id="hst-items"></ul>
+        </div>
+        <div class="placeholder-card" id="hst-empty">
+          <div class="placeholder-icon" aria-hidden="true"></div>
+          <p class="placeholder-title">暂无下载历史</p>
+          <p class="placeholder-text">提交过的下载任务会记录在这里，支持一键重新下载。</p>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings" data-view="settings">
+        <div class="view-head">
+          <h1>设置</h1>
+          <p class="view-sub">保存位置与下载偏好（自动保存，兼容迁移旧版配置）</p>
+        </div>
+        <div class="settings-list">
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">默认保存位置</span>
+              <span class="setting-desc">跟随应用所在目录的“下载”文件夹；手动自定义的位置会保留</span>
+            </div>
+            <div class="setting-value"><span id="output-path">…</span></div>
+            <button class="btn btn-ghost" id="open-output">打开目录</button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">关于</span>
+              <span class="setting-desc">JMComic Downloader GUI · 上游 jmcomic 的 Windows 图形衍生版</span>
+            </div>
+            <div class="setting-value"><span id="about-version">…</span></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <div class="toast-host" id="toast-host"></div>
+
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

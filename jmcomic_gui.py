@@ -11,8 +11,18 @@ import time
 import traceback
 import unicodedata
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+
+# tkinter 仅服务于本文件的旧 Tk 桌面 GUI（main() 的 GUI 分支与 JMComicApp）。
+# 下载核心（run_worker / export_result_pdfs 等）与 --worker 子进程不需要它；
+# 而构建/运行环境（如 PyInstaller 的 managed Python）可能没有 tkinter。
+# 因此做成可选导入：类体只含方法定义 + 惰性注解，无 tkinter 时也能安全 import，
+# 只有真正进入 Tk GUI 分支才要求 tkinter 可用。
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:  # pragma: no cover - 无 Tk 环境的 worker 子进程
+    tk = None
+    filedialog = messagebox = ttk = None
 
 
 APP_NAME = "JMComic-Downloader-GUI"
@@ -53,6 +63,27 @@ def paths_equal(left: str | Path, right: str | Path) -> bool:
     return os.path.normcase(os.path.abspath(os.fspath(left))) == os.path.normcase(
         os.path.abspath(os.fspath(right))
     )
+
+
+# 进度事件通道：在日志文件（run_worker 中 sys.stdout 被重定向到 --log-file）写入
+# 一行 "@@PROGRESS@@" + JSON，由 gui/worker.py 的 tail 线程识别并转为 progress 事件，
+# 最终作为 SSE 推给前端。整体进度按 0~100 规划：图片下载占 0~90，PDF 合并占 90~100。
+def emit_progress(phase: str, done: int, total: int, *, note: str = "") -> None:
+    done = max(int(done), 0)
+    total = max(int(total), 1)
+    fraction = min(done / total, 1.0)
+    if phase == "download":
+        overall = round(fraction * 90, 1)
+    else:  # pdf
+        overall = round(90 + fraction * 10, 1)
+    print("@@PROGRESS@@" + json.dumps({
+        "phase": phase,
+        "done": done,
+        "total": total,
+        "fraction": round(fraction, 4),
+        "overall": overall,
+        "note": note,
+    }, ensure_ascii=False), flush=True)
 
 
 def initial_output_directory(settings: dict) -> Path:
@@ -280,34 +311,78 @@ def export_result_pdfs(result, option, output_dir: str) -> tuple[list[Path], lis
     exported: list[Path] = []
     failures: list[tuple[str, Exception]] = []
 
+    pairs: list[tuple] = []
     for item in _result_items(result):
         detail = item.detail
         if detail.is_album():
             album = detail
-            photos = sorted(list(album), key=lambda photo: int(getattr(photo, "index", 0)))
+            for photo in sorted(list(album), key=lambda photo: int(getattr(photo, "index", 0))):
+                pairs.append((album, photo))
         else:
-            photos = [detail]
-            album = detail.from_album
+            pairs.append((detail.from_album, detail))
 
-        for photo in photos:
-            pdf_name = pdf_filename_for_photo(album, photo)
-            target_path = pdf_dir / pdf_name
-            try:
-                image_paths = image_paths_for_photo(photo, option)
-                page_count = write_verified_pdf(image_paths, target_path, target_path.stem)
-                deleted_count = remove_exported_images(image_paths, output_dir)
-                exported.append(target_path)
-                print(
-                    f"PDF 生成完成：{target_path}（{page_count} 页，"
-                    f"已清理 {deleted_count} 张中间图片）",
-                    flush=True,
-                )
-            except Exception as error:
-                failures.append((pdf_name, error))
-                print(f"PDF 生成失败：{pdf_name}，原因：{error}", flush=True)
-                traceback.print_exc(file=sys.stderr)
+    pdf_total = max(len(pairs), 1)
+    emit_progress("pdf", 0, pdf_total, note="开始合并 PDF")
+
+    for pdf_done, (album, photo) in enumerate(pairs, start=1):
+        pdf_name = pdf_filename_for_photo(album, photo)
+        target_path = pdf_dir / pdf_name
+        try:
+            image_paths = image_paths_for_photo(photo, option)
+            page_count = write_verified_pdf(image_paths, target_path, target_path.stem)
+            deleted_count = remove_exported_images(image_paths, output_dir)
+            exported.append(target_path)
+            print(
+                f"PDF 生成完成：{target_path}（{page_count} 页，"
+                f"已清理 {deleted_count} 张中间图片）",
+                flush=True,
+            )
+        except Exception as error:
+            failures.append((pdf_name, error))
+            print(f"PDF 生成失败：{pdf_name}，原因：{error}", flush=True)
+            traceback.print_exc(file=sys.stderr)
+        emit_progress("pdf", pdf_done, pdf_total, note=f"PDF {pdf_done}/{pdf_total}")
 
     return exported, failures
+
+
+# 带进度回调的下载器子类：在 JMComic 各钩子里累计已完成图片数并上报。
+# 通过 api.download_album/download_photo 的 downloader 参数注入；批量下载时
+# download_batch 会把同一类透传给每个子线程（各自实例，并发写日志按行切分）。
+def _progress_downloader_class():
+    import jmcomic
+
+    class _ProgressDownloader(jmcomic.JmDownloader):
+        def __init__(self, option):
+            super().__init__(option)
+            self._image_done = 0
+            self._image_total = 0
+
+        # 本子模式：以“总页数”为该阶段进度上限
+        def before_album(self, album):
+            self._image_total = max(int(getattr(album, "page_count", 0)), 1)
+            self._image_done = 0
+            super().before_album(album)
+            emit_progress("download", 0, self._image_total, note="开始下载")
+
+        # 章节模式：before_album 不会被调用，以当前章节页数为上限
+        def before_photo(self, photo):
+            if not self._image_total:
+                self._image_total = max(int(len(photo)), 1)
+                self._image_done = 0
+                emit_progress("download", 0, self._image_total, note=f"开始章节 {photo.id}")
+            super().before_photo(photo)
+
+        def after_image(self, image, img_save_path):
+            super().after_image(image, img_save_path)
+            self._image_done += 1
+            emit_progress("download", self._image_done, self._image_total, note=f"图片 {image.tag}")
+
+        def after_album(self, album):
+            super().after_album(album)
+            emit_progress("download", self._image_total, self._image_total, note="图片下载完成")
+
+    return _ProgressDownloader
 
 
 def run_worker(args: argparse.Namespace) -> int:
@@ -350,7 +425,7 @@ def run_worker(args: argparse.Namespace) -> int:
 
         download = jmcomic.download_album if args.kind == "album" else jmcomic.download_photo
         target = args.ids[0] if len(args.ids) == 1 else args.ids
-        result = download(target, option, check_exception=True)
+        result = download(target, option, check_exception=True, downloader=_progress_downloader_class())
         failed = getattr(result, "failed", {})
 
         print("-" * 64)
@@ -920,6 +995,10 @@ def main() -> int:
         if not args.log_file or not args.output or not args.ids:
             return 64
         return run_worker(args)
+
+    if tk is None:  # pragma: no cover - 无 Tk 环境走不到 GUI 分支
+        print("错误：当前 Python 环境缺少 tkinter，无法启动 Tk 桌面界面。", file=sys.stderr)
+        return 69
 
     root = tk.Tk()
     JMComicApp(root)
