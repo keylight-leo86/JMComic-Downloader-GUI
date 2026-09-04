@@ -801,13 +801,15 @@
     });
     // 放大后左键拖动平移（未放大不拦截，保留原生滚动）
     bindReaderPan(scroll);
+    // Ctrl+滚轮 → 阅读区局部缩放（不触浏览器整页缩放）
+    bindReaderZoomWheel(scroll);
 
     // 底部信息条
     const foot = el("div", "pv-reader-foot");
     const countLabel = el("span", "pv-reader-count", "第 1 / " + photo.pageCount + " 页");
     foot.appendChild(buildReaderZoombar());   // 缩放：− / 百分比 / ＋ / 适应宽度 / 1:1
     if (rw) {
-      const tip = el("span", "pv-reader-tip", "滚轮上下滑动 · 右键放大查看 · 放大后可拖动 · 底栏可缩放");
+      const tip = el("span", "pv-reader-tip", "滚轮上下滑动 · Ctrl+滚轮局部缩放 · 右键放大 · 放大后可拖动 · 底栏可缩放");
       foot.appendChild(tip);
     }
     foot.appendChild(countLabel);
@@ -980,6 +982,16 @@
     };
     sc.addEventListener("pointerup", endPan);
     sc.addEventListener("pointercancel", endPan);
+  }
+
+  /* Ctrl/Cmd + 滚轮 → 阅读区缩放（锚定视口中心不跳视线）。拦截 preventDefault 避免整页缩放 */
+  function bindReaderZoomWheel(sc) {
+    sc.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;   // 仅 Ctrl（macOS 兼容 Cmd）
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      applyReaderZoom((PV.readerZoom || 1) * factor, true);
+    }, { passive: false });
   }
 
   /* ---- 图片放大查看（自绘浮层：右键进入、滚轮/双击缩放、拖拽平移、Esc/× 关闭） ---- */

@@ -1163,6 +1163,8 @@ body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.5
   min-height: 0;
   overflow-y: auto;
   overflow-x: auto;          /* 放大后（图片宽超出容器）可横向平移查看 */
+  transform: translateZ(0);  /* 提升为独立合成层，滚动更平滑 */
+  will-change: transform;
   background:
     radial-gradient(1200px 500px at 50% -10%, rgba(255, 170, 60, 0.05), transparent 60%),
     #171310;

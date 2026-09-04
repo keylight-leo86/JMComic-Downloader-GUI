@@ -85,6 +85,8 @@ class _RECT(ctypes.Structure):
 
 VK_LBUTTON = 0x01
 SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+SWP_NOCOPYBITS = 0x0100                # 保留上次绘制缓冲，避免缩放/拖动期闪烁（透明残影）
+SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE = 6, 3, 9
 WM_SYSCOMMAND = 0x0112
 SC_MAXIMIZE, SC_RESTORE = 0xF030, 0xF120
 SC_MOVE, SC_SIZE = 0xF010, 0xF000   # SC_MOVE|HTCAPTION(0xF012)=系统移动循环；SC_SIZE|HTxxx=系统缩放循环
@@ -152,7 +154,7 @@ def _manual_move_drag(h) -> None:
             else:
                 top_since = None
             user32.SetWindowPos(h, 0, nx, ny, 0, 0,
-                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS)
         # —— 松开左键：边缘吸附判定（左/右半屏） ——
         if not user32.GetCursorPos(ctypes.byref(pt)):
             return
@@ -173,11 +175,11 @@ def _manual_move_drag(h) -> None:
             hh = wa.bottom - wa.top
             if nx <= wa.left + 6:                     # 贴左 → 左半屏
                 user32.SetWindowPos(h, 0, wa.left, wa.top, half, hh,
-                                    SWP_NOZORDER | SWP_NOACTIVATE)
+                                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS)
                 _log(f"[drag] 吸附左半屏 → ({wa.left},{wa.top},{half}x{hh})")
             elif nx + w >= wa.right - 6:              # 贴右 → 右半屏
                 user32.SetWindowPos(h, 0, wa.right - half, wa.top, half, hh,
-                                    SWP_NOZORDER | SWP_NOACTIVATE)
+                                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS)
                 _log(f"[drag] 吸附右半屏 → ({wa.right - half},{wa.top},{half}x{hh})")
     except Exception:  # noqa: BLE001 拖动循环尽力而为
         pass
@@ -262,7 +264,7 @@ def _manual_resize_loop(h, edges: list[str]) -> None:
             if has_b:
                 b = max(base[1] + min_h, base[3] + dy)
             user32.SetWindowPos(h, 0, l, t, r - l, b - t,
-                                SWP_NOZORDER | SWP_NOACTIVATE)
+                                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS)
             n += 1
         _log(f"[resize] 结束 iter={n}")
     except Exception:  # noqa: BLE001 缩放循环尽力而为
@@ -349,6 +351,10 @@ def _setup_user32() -> None:
     user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, ctypes.c_uint]
     user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint64, ctypes.c_int64]
+    user32.SetClassLongPtrW.restype = ctypes.c_void_p
+    user32.SetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    ctypes.windll.gdi32.CreateSolidBrush.restype = ctypes.c_void_p
+    ctypes.windll.gdi32.CreateSolidBrush.argtypes = [ctypes.c_ulong]
 
 
 def _apply_dwm(hwnd, *, rounded: bool = True) -> None:
@@ -372,6 +378,26 @@ def _apply_dwm(hwnd, *, rounded: bool = True) -> None:
         _set(2, 1)   # DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED
         _set(33, 2 if rounded else 0)  # DWMWA_WINDOW_CORNER_PREFERENCE: ROUND(2)/DEFAULT(0)
     except Exception:  # noqa: BLE001 dwmapi 缺失或旧版系统不支持时静默降级
+        pass
+
+
+def _fill_window_background(hwnd) -> None:
+    """把窗口 class 背景刷成与页面底色一致（--bg-app #f6f1e9，暖米）。
+
+    frameless + 圆角下，WebView2 未覆盖的边角/尺寸调整期由窗口自身擦背景；
+    默认背景可能为黑/白并透出透明块（“窗口色填充不完全”）。换成与页面相同
+    的暖米不透明刷后，边角与过渡期都显示一致底色，不露出黑块、桌面或色差环。
+    """
+    try:
+        r, g, b = 0xF6, 0xF1, 0xE9
+        cre = (b << 16) | (g << 8) | r          # COLORREF 0x00BBGGRR
+        brush = ctypes.windll.gdi32.CreateSolidBrush(cre)
+        if not brush:
+            return
+        hbr = int(ctypes.cast(brush, ctypes.c_void_p).value)
+        # GCLP_HBRBACKGROUND = -10；两窗同用此色，类级设置安全
+        ctypes.windll.user32.SetClassLongPtrW(ctypes.c_void_p(int(hwnd)), -10, hbr)
+    except Exception:  # noqa: BLE001 背景刷失败不影响主流程
         pass
 
 
@@ -562,6 +588,8 @@ def _install_window_logic(title: str, min_w: int, min_h: int,
         pass
     # 关闭非客户区渲染 → 系统不再绘制顶部 1px accent/白细框
     _apply_dwm(hwnd, rounded=True)
+    # 窗口 class 背景刷成米色 → 圆角外/尺寸调整期不再露出黑块或透明区
+    _fill_window_background(hwnd)
     proc_ptr = ctypes.cast(_make_wndproc(title, min_w, min_h, intercept_close),
                            ctypes.c_void_p).value
     prev = user32.SetWindowLongPtrW(hwnd, -4, proc_ptr)
@@ -809,15 +837,18 @@ def toggle_reader_maximize() -> dict:
     if not hwnd:
         return {"ok": False, "error": "window not ready"}
     user32 = ctypes.windll.user32
-    user32.PostMessageW(int(hwnd), WM_SYSCOMMAND,
-                        SC_RESTORE if user32.IsZoomed(hwnd) else SC_MAXIMIZE, 0)
+    # 同步 ShowWindow 走系统标准补间动画（PostMessage WM_SYSCOMMAND 在本壳下
+    # 偶发被 GUI 队列吞掉不生效→既无动作也无动画，故换成同步状态切换）
+    user32.ShowWindow(
+        int(hwnd), SW_RESTORE if user32.IsZoomed(hwnd) else SW_MAXIMIZE)
     return {"ok": True}
 
 
 def minimize_reader() -> dict:
     hwnd = gui_server.get_reader_hwnd()
     if hwnd:
-        ctypes.windll.user32.PostMessageW(int(hwnd), WM_SYSCOMMAND, 0xF020, 0)  # SC_MINIMIZE
+        # 同步 ShowWindow(SW_MINIMIZE) → 系统标准最小化动画（PostMessage 偶发被吞）
+        ctypes.windll.user32.ShowWindow(int(hwnd), SW_MINIMIZE)
     return {"ok": True}
 
 
@@ -899,10 +930,11 @@ def toggle_fullscreen(wid: str = "main") -> dict:
         if box:
             left, top, right, bottom, was_max = box
             if was_max:
-                user32.PostMessageW(int(hwnd), WM_SYSCOMMAND, SC_MAXIMIZE, 0)
+                user32.ShowWindow(int(hwnd), SW_MAXIMIZE)
             else:
                 user32.SetWindowPos(int(hwnd), 0, left, top,
-                                    right - left, bottom - top, 0x4 | 0x10)  # NOZORDER|NOACTIVATE
+                                    right - left, bottom - top,
+                                    0x4 | 0x10 | SWP_NOCOPYBITS)  # NOZORDER|NOACTIVATE|NOCOPYBITS
         user32.ShowWindow(int(hwnd), 5)  # SW_SHOW
         _log(f"[fullscreen] {title} 退出全屏")
         return {"ok": True, "fullscreen": False}
@@ -925,7 +957,8 @@ def toggle_fullscreen(wid: str = "main") -> dict:
         pass
     m = mi.rcMonitor
     user32.SetWindowPos(int(hwnd), 0, m.left, m.top,
-                        m.right - m.left, m.bottom - m.top, 0x20 | 0x40)  # FRAMECHANGED|SHOWWINDOW
+                        m.right - m.left, m.bottom - m.top,
+                        0x20 | 0x40)  # FRAMECHANGED|SHOWWINDOW（全屏放大保留系统过渡）
     user32.SetForegroundWindow(int(hwnd))
     _log(f"[fullscreen] {title} 进入全屏 {m.right - m.left}x{m.bottom - m.top}")
     return {"ok": True, "fullscreen": True}

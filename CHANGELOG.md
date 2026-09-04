@@ -2,6 +2,38 @@
 
 本项目遵循语义化版本号。
 
+## 未发布（窗口动画平滑 + 透明区填充 + 阅读器 Ctrl 滚轮缩放）
+
+### 窗口动画流畅度（主窗 + 阅读器）
+- **最小化/最大化/还原改同步切换**：`gui/server.py` 主窗、`gui/desktop.py` 阅读窗
+  （`minimize_reader` / `toggle_reader_maximize`）改用 `ShowWindow(SW_MINIMIZE/SW_MAXIMIZE/
+  SW_RESTORE)` 同步调用，替代原先 `PostMessage(WM_SYSCOMMAND)` 异步消息——后者在本壳下
+  偶发被 GUI 队列吞掉（既无动作也无动画），同步切换可稳定触发系统标准补间动画。
+- **退出全屏还原最大化**：`toggle_fullscreen` 退出分支对原为最大化的窗口用
+  `ShowWindow(SW_MAXIMIZE)` 还原，动画保持一致。
+- **缩放/拖动抗闪烁**：所有 `SetWindowPos` 尺寸调整追加 `SWP_NOCOPYBITS`，复用上次绘制
+  缓冲，减少拖动/缩放期的残影闪烁。
+
+### 窗口色填充（透明区块修复，主窗 + 阅读器）
+- **窗口 class 背景刷**：新增 `_fill_window_background(hwnd)`，把窗口 class 背景刷设为
+  与页面同底的暖米 `#f6f1e9`（`--bg-app`），frameless 圆角边角、尺寸调整期由窗口擦背景
+  时显示一致色调，不再露出黑色或透明块（此前颜色与 `--bg-app` 略有偏差，改为一笔画齐）。
+
+### 阅读器 Ctrl（Cmd）滚轮缩放
+- `static/js/app.js` 新增 `bindReaderZoomWheel`：阅读区拦截 `Ctrl`（macOS `Cmd`）+滚轮，
+  `preventDefault` 阻止整页缩放，按 `1.1×` 局部缩放并锚定视口中心不跳视线
+  （复用 `applyReaderZoom(next, keepCenter=true)`）。
+- 阅读区底栏提示新增「Ctrl+滚轮局部缩放」说明。
+
+### UI 动画平滑
+- `static/css/app.css`：`.pv-reader-scroll` 提升为独立合成层
+  （`transform: translateZ(0)` + `will-change: transform`），滚动与缩放更流畅；
+  顶栏/侧栏悬浮卡、content 平板、折叠动画统一 `--ease-out` 缓动，仅动 transform/opacity。
+
+### 实现与验证
+- 改动文件：`gui/desktop.py` / `gui/server.py` / `static/js/app.js` / `static/css/app.css` / `CHANGELOG.md`
+- `python -m py_compile` 与 `node --check` 均通过；需打包后实机验证动画流畅度与透明区。
+
 ## 未发布（在线预览搜索历史 + 布局留白收敛）
 
 ### 预览页搜索历史

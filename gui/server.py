@@ -238,9 +238,11 @@ def window_action(action: str, qs: dict | None = None) -> dict:
     if not hwnd:
         return {"ok": False, "error": "window not ready"}
     if action == "minimize":
-        _post(hwnd, WM_SYSCOMMAND, SC_MINIMIZE)
+        # 同步 ShowWindow(SW_MINIMIZE) → 系统标准最小化动画（PostMessage 偶发被吞不生效）
+        user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
     elif action == "toggle-maximize":
-        _post(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE if not _is_zoomed(hwnd) else SC_RESTORE)
+        # 同步 ShowWindow → 走系统补间动画（PostMessage WM_SYSCOMMAND 在本壳下偶发被吞）
+        user32.ShowWindow(hwnd, 9 if _is_zoomed(hwnd) else 3)  # SW_RESTORE=9 / SW_MAXIMIZE=3
     elif action == "toggle-fullscreen":
         try:
             from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
