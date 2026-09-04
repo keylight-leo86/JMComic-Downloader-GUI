@@ -358,43 +358,46 @@ def _setup_user32() -> None:
 
 
 def _apply_dwm(hwnd, *, rounded: bool = True) -> None:
-    """DWM：消除 frameless 下的 1px accent/白细边，同时保住系统窗口动画。
+    """DWM：兼顾「无蓝条」与「原生窗口动画」的 frameless 边框方案。
 
-    frameless 壳即使摘掉 WS_CAPTION/WS_BORDER，为保留边缘缩放手柄仍带
-    WS_THICKFRAME，Win11 的 DWM 会在窗口四周绘制非客户区（accent 色细边框 +
-    圆角）——即 UI 顶部那条 1px 蓝/白线。
-    - Win11+：优先 DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE（attr 34）——只隐藏
-      系统边框描边，DWM 非客户区渲染管线仍在运行 → 最小化/还原/最大化的
-      系统过渡动画完整保留（此前整条禁用 NCRENDERING 会连动画一起削弱）。
-    - Win10（attr 34 返回非 0 HRESULT）：回退 DWMNCRP_DISABLED 关闭整条
-      非客户区渲染（根治细边）。
-    rounded 再通过 DWMWA_WINDOW_CORNER_PREFERENCE 显式声明圆角，
-    让悬浮卡片风格与自绘栏一致（全屏态传 rounded=False 还原直角）。
+    frameless + 保留 WS_THICKFRAME（供边缘缩放手柄）时，Win11 的 DWM 会在非
+    客户区补画一条 accent 色细边框——即用户反馈的顶部“蓝条”。
+    关键权衡：窗口管理过渡动画（最小化→任务栏、还原、最大化/缩回）依赖 DWM
+    非客户区渲染管线；若用 DWMNCRP_DISABLED（attr 2=1）整体关掉，蓝条虽消失
+    但最小化/最大化/还原动画也随之失效（实测用户反馈“无动画”）。因此这里
+    **保留非客户区渲染**（DWMNCRP_ENABLED），改用：
+      · attr 34 DWMWA_BORDER_COLOR = DWM_COLOR_NONE → 边框透明（去蓝条）
+      · attr 3  TRANSITIONS_FORCEDISABLED = FALSE  → 动画保活
+    这样既隐藏边框，又保留系统动画。圆角由 attr 33 显式声明（全屏传
+    rounded=False 还原直角）。
     """
     try:
         dwm = ctypes.windll.dwmapi
 
-        def _set(attr: int, val: int, typ=ctypes.c_int) -> int:
+        def _set(attr: int, val: int, typ=ctypes.c_int) -> None:
             v = typ(val)
-            return int(dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)), attr,
-                                                 ctypes.byref(v), ctypes.sizeof(v)))
+            dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)), attr,
+                                      ctypes.byref(v), ctypes.sizeof(v))
 
-        if _set(34, 0xFFFFFFFE, ctypes.c_uint) != 0:   # DWMWA_BORDER_COLOR=NONE
-            _set(2, 1)   # Win10 回退：DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED
+        _set(2, 2)                 # DWMNCRP_ENABLED —— 保留管线，窗口动画才生效
+        _set(34, 0xFFFFFFFE, ctypes.c_uint)  # DWMWA_BORDER_COLOR = DWM_COLOR_NONE（边框透明）
+        _set(3, 0)                 # DWMWA_TRANSITIONS_FORCEDISABLED = FALSE（动画保活）
         _set(33, 2 if rounded else 0)  # DWMWA_WINDOW_CORNER_PREFERENCE: ROUND(2)/DEFAULT(0)
     except Exception:  # noqa: BLE001 dwmapi 缺失或旧版系统不支持时静默降级
         pass
 
 
-def _fill_window_background(hwnd) -> None:
-    """把窗口 class 背景刷成与页面底色一致（--bg-app #f6f1e9，暖米）。
+def _fill_window_background(hwnd, *, rgb=(0xF6, 0xF1, 0xE9)) -> None:
+    """把窗口 class 背景刷成与页面底色一致，消除圆角外/调整期的黑块或透明区。
 
     frameless + 圆角下，WebView2 未覆盖的边角/尺寸调整期由窗口自身擦背景；
-    默认背景可能为黑/白并透出透明块（“窗口色填充不完全”）。换成与页面相同
-    的暖米不透明刷后，边角与过渡期都显示一致底色，不露出黑块、桌面或色差环。
+    若背景为黑/白会透出透明块（“窗口色填充不完全”）。换成与页面相同的
+    不透明刷后，边角与过渡期都显示一致底色。
+    - 主窗：页面 --bg-app 暖米 #f6f1e9（默认）
+    - 阅读窗：页面深底 #171310（传 rgb=(0x17,0x13,0x10)）
     """
     try:
-        r, g, b = 0xF6, 0xF1, 0xE9
+        r, g, b = rgb
         cre = (b << 16) | (g << 8) | r          # COLORREF 0x00BBGGRR
         brush = ctypes.windll.gdi32.CreateSolidBrush(cre)
         if not brush:
@@ -403,6 +406,21 @@ def _fill_window_background(hwnd) -> None:
         # GCLP_HBRBACKGROUND = -10；两窗同用此色，类级设置安全
         ctypes.windll.user32.SetClassLongPtrW(ctypes.c_void_p(int(hwnd)), -10, hbr)
     except Exception:  # noqa: BLE001 背景刷失败不影响主流程
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# 窗口呼出：统一走 __show_window 原生显示 + 前端内容动画（boot/win-reveal）
+# 曾尝试 AnimateWindow(AW_BLEND) 做整窗淡入——实测会致 WebView2 内容不重绘
+# （内容消失）且动画不触发（仍瞬时弹出），故弃用。窗口级出现动画由"创建即
+# 可见"触发系统原生入场；阅读窗复用靠前端 win-reveal 补内容渐进。
+# --------------------------------------------------------------------------- #
+def __show_window(hwnd) -> None:
+    """原生显示窗口（瞬时，内容过渡交给前端 CSS 动画；不触碰 WebView2）。"""
+    _setup_user32()
+    try:
+        ctypes.windll.user32.ShowWindow(int(hwnd), 5)  # SW_SHOW
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -593,8 +611,10 @@ def _install_window_logic(title: str, min_w: int, min_h: int,
         pass
     # 关闭非客户区渲染 → 系统不再绘制顶部 1px accent/白细框
     _apply_dwm(hwnd, rounded=True)
-    # 窗口 class 背景刷成米色 → 圆角外/尺寸调整期不再露出黑块或透明区
-    _fill_window_background(hwnd)
+    # 窗口 class 背景刷成页面底色：主窗暖米 / 阅读窗深底（圆角外不再露黑块/色差）
+    _fill_window_background(hwnd, rgb=((0x17, 0x13, 0x10)
+                                       if title == READER_TITLE
+                                       else (0xF6, 0xF1, 0xE9)))
     proc_ptr = ctypes.cast(_make_wndproc(title, min_w, min_h, intercept_close),
                            ctypes.c_void_p).value
     prev = user32.SetWindowLongPtrW(hwnd, -4, proc_ptr)
@@ -880,7 +900,7 @@ def _show_window(force_center: bool = True) -> None:
                 x, y = (sw - WIDTH) // 2, (sh - HEIGHT) // 2
                 ctypes.windll.user32.SetWindowPos(int(hwnd), 0, x, y, WIDTH, HEIGHT, 0x4)
                 _shown_once[0] = True
-            ctypes.windll.user32.ShowWindow(int(hwnd), 5)  # SW_SHOW
+            __show_window(int(hwnd))   # 原生显示（主窗创建即可见，系统入场动画已触发）
     except Exception:  # noqa: BLE001
         pass
 
@@ -1016,19 +1036,30 @@ def main(server: gui_server.GuiServer, dev: bool = False) -> None:
         _ensure_window_logic(READER_TITLE, READER_MIN_W, READER_MIN_H, intercept_close=True)
 
     # 两个窗口都须在 start() 前创建（pywebview 6 不支持运行期新增窗口）
+    # 主窗“创建即可见”→ 触发 Windows 原生窗口入场动画（scale+fade），解决
+    # “瞬间弹出”。创建时即居中定位，避免 loaded 后再 SetWindowPos 造成跳动。
+    _cx, _cy = 0, 0
+    try:
+        user32 = ctypes.windll.user32
+        sw = int(user32.GetSystemMetrics(0))
+        sh = int(user32.GetSystemMetrics(1))
+        _cx, _cy = (sw - WIDTH) // 2, (sh - HEIGHT) // 2
+    except Exception:  # noqa: BLE001 拿不到屏参时交给系统默认定位
+        pass
     main_win = webview.create_window(
         APP_TITLE,
         server.base_url,
         width=WIDTH,
         height=HEIGHT,
+        x=_cx,
+        y=_cy,
         min_size=(MIN_W, MIN_H),
         frameless=True,
         easy_drag=False,       # 拖动交 WM_NCHITTEST → 系统原生
         text_select=True,
         js_api=Api(server),
-        background_color="#f7f4ee",
+        background_color="#f6f1e9",  # 与 --bg-app 同色：启动/调整期无色差闪变
         confirm_close=False,
-        hidden=True,           # 先隐藏，loaded 后再显示，避免 WebView2 容器闪现
     )
     _win_main.append(main_win)
     reader_win = webview.create_window(
@@ -1041,7 +1072,7 @@ def main(server: gui_server.GuiServer, dev: bool = False) -> None:
         easy_drag=False,
         text_select=True,
         js_api=Api(server),
-        background_color="#f6f1e9",   # 与 --bg-app 同色：启动/调整期无色差闪变
+        background_color="#171310",   # 阅读窗页面深底：启动/调整期无色差闪变
         confirm_close=False,
         hidden=True,
     )

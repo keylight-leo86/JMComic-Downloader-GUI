@@ -2,6 +2,36 @@
 
 本项目遵循语义化版本号。
 
+## 未发布（蓝条根治 + 主窗原生入场动画）
+
+### 窗口“蓝条”根治
+- **关键权衡修正**：`DWMWA_NCRENDERING_POLICY=DWMNCRP_DISABLED` 虽能消边框，
+  但会连带关闭 DWM 的最小化/最大化/还原动画（实测无动画）。现改为
+  **保留非客户区渲染（DWMNCRP_ENABLED）** 以保证原生窗口动画，并改用
+  `DWMWA_BORDER_COLOR = DWM_COLOR_NONE`（attr 34）把边框改为透明来消除
+  “蓝条”；同时 `DWMWA_TRANSITIONS_FORCEDISABLED=FALSE`（attr 3）确认动画
+  不被误禁用。从而兼顾“无蓝条”与“动画流畅”。
+
+### 主窗原生入场动画（不再“瞬间弹出”）
+- **弃用 AnimateWindow**：曾用 `AnimateWindow(AW_ACTIVATE|AW_BLEND)` 做整窗
+  淡入——实测会致 WebView2 内容不重绘（内容消失）且动画不触发，已回退
+  `ShowWindow`，内容消失问题随之消失（前端 boot/win-reveal 负责内容渐进）。
+- **主窗改为“创建即可见”**（`hidden=False` + 创建时居中定位）：触发 Windows
+  原生窗口入场动画（scale+fade），观感与普通窗口一致；创建时按屏幕尺寸居中，
+  避免 loaded 后再 SetWindowPos 造成跳动。
+- 阅读窗仍常驻隐藏/复用时 `SW_SHOW`（无原生动画），靠前端 `win-reveal`
+  补内容淡入。
+
+### 阅读窗底色修正（色差/光晕）
+- 阅读窗页面为深底 `#171310`，但窗口背景刷/`background_color` 此前误用主窗
+  暖米 `#f6f1e9` → 圆角处露出浅色光晕。已按窗口分别填充：主窗暖米、阅读窗
+  深底，`_fill_window_background` 支持按窗口传色。
+
+### 实现与验证
+- 改动文件：`gui/desktop.py` / `CHANGELOG.md`
+- `python -m py_compile` 通过；需实机验证：内容正常显示、主窗启动有原生
+  入场动画、顶部蓝条消失。
+
 ## 未发布（窗口动画与 UI 动画全面优化 + 进度条显示修复）
 
 ### 窗口动画（更流畅）
