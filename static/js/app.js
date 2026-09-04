@@ -113,10 +113,11 @@
       fetch("/api/window/" + action + qs)
         .then((r) => r.json().catch(() => null))
         .catch(() => null);
-    // 冷启动头几秒窗口控制器可能还没注册（后端返回 window not ready），
-    // 此时不能静默吞掉——短延迟后补发一次，按钮点了必定生效。
+    // 冷启动头几秒窗口控制器可能还没注册（后端返回 window not ready /
+    // reader window not ready），此时不能静默吞掉——短延迟后补发一次，按钮点了必定生效。
+    const READY_ERRS = ["window not ready", "reader window not ready"];
     return call().then((data) => {
-      if (data && data.ok === false && data.error === "window not ready") {
+      if (data && data.ok === false && READY_ERRS.includes(data.error)) {
         return new Promise((resolve) => setTimeout(() => resolve(call()), 400));
       }
       return data;
@@ -1205,21 +1206,30 @@
 
   /* ---- 独立阅读窗：主窗入口 + 阅读窗自举 ---- */
 
-  // 主窗详情页「在新窗口阅读」：优先走 pywebview 壳开真窗口（wid=reader）；
-  // 浏览器模式 / 无壳环境（后端返回 window not ready）降级为新标签页打开同 URL。
-  // chapter 可选：传入章节 id 时直接定位到该章；未传则开首章。
+  // 主窗详情页「在新窗口阅读」：优先走 pywebview 壳开真窗口（wid=reader）。
+  // 判定是否处于桌面壳：pywebview 注入 window.pywebview（读者壳窗口与主窗都有，
+  // 纯浏览器 --browser 模式无）。仅纯浏览器模式（无壳）才降级为新标签页打开同 URL；
+  // 壳内若 open-reader 偶发失败，只重试 + 提示，绝不误开系统浏览器。
   function openReaderWindow(album, chapter) {
     if (!album) return;
     const title = album.title || "";
     const ch = (chapter && chapter.id) ? String(chapter.id) : "";
-    windowAction("open-reader", { album: album.id, title: title, chapter: ch }).then((data) => {
-      if (!data || data.ok !== true) {
-        const url = location.origin + "/?w=reader&album=" + encodeURIComponent(album.id) +
-          (title ? "&title=" + encodeURIComponent(title) : "") +
-          (ch ? "&ch=" + encodeURIComponent(ch) : "");
-        window.open(url, "_blank");
-      }
-    });
+    const inShell = typeof window.pywebview !== "undefined";
+    const fallbackUrl = () =>
+      location.origin + "/?w=reader&album=" + encodeURIComponent(album.id) +
+      (title ? "&title=" + encodeURIComponent(title) : "") +
+      (ch ? "&ch=" + encodeURIComponent(ch) : "");
+
+    const attempt = (left) => {
+      windowAction("open-reader", { album: album.id, title: title, chapter: ch })
+        .then((data) => {
+          if (data && data.ok === true) return; // 已交给阅读窗
+          if (!inShell) { window.open(fallbackUrl(), "_blank"); return; } // 纯浏览器模式
+          if (left > 0) { setTimeout(() => attempt(left - 1), 500); return; }
+          window.jmToast && window.jmToast("阅读窗暂未就绪，请稍后再试", 2600, "error");
+        });
+    };
+    attempt(2);
   }
 
   // 阅读窗页面加载完成即进入该模式：隐藏主窗导航，直接读 album 并打开章节。

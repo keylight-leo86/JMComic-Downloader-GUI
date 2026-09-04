@@ -2,6 +2,56 @@
 
 本项目遵循语义化版本号。
 
+## 未发布（原生动画再修正：托管状态切换 + 阅读窗不再误开浏览器）
+
+### 最小化/最大化/还原动画：保留 WS_CAPTION + 改走「托管状态切换」
+- **两要素缺一不可**：
+  1. **样式位（WS_CAPTION）**：DWM 把窗口识别为“普通顶层窗口”、为最小化→任务栏 /
+     还原 / 最大化-缩回播放补间动画的前提。pywebview frameless 底层是 `WS_POPUP`
+     （不含 caption，弹窗被 DWM 排除在窗口管理动画之外），故
+     `_install_window_logic` / `_guard_frameless` / `_frame_style` 在
+     `WS_OVERLAPPED` 基础上统一 **保 WS_CAPTION + 清 WS_POPUP + THICKFRAME +
+     MIN/MAX/SYSMENU**；系统栏由本 WndProc 的 `WM_NCCALCSIZE return 0` 隐藏，accent
+     细边由 `DWMWA_BORDER_COLOR=透明` 去除 → 无系统栏 / 无蓝条 / 无两层框。
+  2. **托管状态切换**：此前最小化/最大化/还原用 `user32.ShowWindow(hwnd, …)` 直接改
+     HWND，绕开 pywebview 的 WinForms `WindowState`（托管侧仍停留在 Normal），造成
+     Win32 与托管状态 **desync**，动画仍不触发（用户真机反复印证）。现改为经
+     pywebview `Window.minimize()/maximize()/restore()`（内部 `Invoke` 到 GUI 线程设
+     `FormWindowState`），在状态切换前用 `_ensure_caption_now()` 同步把样式钳为含
+     caption 形态。托管失败才退回 `ShowWindow`（此时仍带 caption → 系统补间）。
+- 覆盖主窗与阅读窗：新增 `minimize_main` / `toggle_main_maximize`，并把
+  `minimize_reader` / `toggle_reader_maximize` 一并改走托管路径；`server.py`
+  主窗 `minimize` / `toggle-maximize` 路由到上述托管入口（含 ShowWindow 兜底）。
+
+### 拖动 / 边缘缩放回归原生（解决「拖动不顺畅、判定生硬」）
+- 弃用 16ms 轮询 `SetWindowPos` 跟手（不跟手、Aero Snap 依赖硬编），改走系统原生
+  移动/缩放循环：前端标题栏/边缘 mousedown → `/api/window/drag|resize` →
+  `start_native_drag/start_native_resize` → `SendMessage(WM_NCLBUTTONDOWN,
+  HTCAPTION/HTxxx)`，WndProc 命中后 `ReleaseCapture()` 并把消息**交还原始
+  WinForms Form WndProc**，DefWindowProc 展开系统 modal 移动/缩放循环——跟手、
+  拖到顶部最大化预览、贴边左右半屏、多屏 Snap 判定全原生顺滑。
+- 关键点：不能走 `WM_SYSCOMMAND(SC_MOVE/SC_SIZE)`（WinForms 托管处理会吞掉），
+  正确入口是 `WM_NCLBUTTONDOWN + HT 命中`（经典 frameless 拖法）；原轮询路径保留
+  为兜底，保证拖动在任何异常下都可用。
+
+### 阅读窗不再误开系统浏览器（「在新窗口阅读」偶发跳到浏览器）
+- **根因**：前端 `openReaderWindow` 在 `/api/window/open-reader` 返回非 ok 时无条件
+  `window.open(url, "_blank")`；桌面壳冷启动头几秒阅读窗未就绪（`reader window not
+  ready` / 未注册 hwnd）即触发，表现为“阅读窗没出现、反而打开浏览器”。
+- **修复**：
+  - 前端只在**纯浏览器模式**（无 pywebview 壳，`typeof window.pywebview ===
+    "undefined"`）才降级新标签页；壳内失败改为短延迟重试（至多 2 次），仍失败仅 toast
+    提示，绝不跳系统浏览器。
+  - `windowAction` 把 `reader window not ready` 一并纳入“窗口未就绪”→补发一次。
+  - 后端 `open_reader` / `_show_reader_window` 增加 `logs/desktop.log` 诊断日志（含
+    `_win_reader` 长度 / `reader_hwnd` / SW_SHOW 结果），排查“阅读窗未出现”一目了然。
+
+### 实现与验证
+- 改动文件：`gui/desktop.py` / `gui/server.py` / `static/js/app.js` / `CHANGELOG.md`
+- `py_compile`、模块 import、`node --check` 校验通过；并从分支历史删除此前引入「阅读窗
+  偶发未创建」回归的错误提交。需打包实机验证：最小化→任务栏 / 还原 / 最大化-缩回的原生
+  补间（主窗与阅读窗）、拖动跟手 / Aero Snap、阅读窗正常呼出且不再误开浏览器。
+
 ## 未发布（蓝条根治 + 主窗原生入场动画）
 
 ### 窗口“蓝条”根治

@@ -93,10 +93,11 @@ SC_MOVE, SC_SIZE = 0xF010, 0xF000   # SC_MOVE|HTCAPTION(0xF012)=系统移动循�
 _drag_active: list = [False]
 
 # 原生窗口行为开关与状态（按窗口标题索引）
-# ⚠️ 实测（2026-09-04）：WinForms 宿主吞掉 SC_MOVE/SC_SIZE 系统循环，且
-# WebView2 子窗口盖满客户区使 WM_NCLBUTTONDOWN 到不了 WndProc → 原生拖动/
-# 缩放路径不可用，统一走 start_manual_drag/start_manual_resize 轮询实现。
-_NATIVE_DRAG = False           # True 时 WM_NCLBUTTONDOWN(HTCAPTION) 尝试系统循环（死路径，保留备用）
+# 复盘修正（2026-09-05）：此前误判“原生拖动/缩放/动画不可用”是因为把 WS_CAPTION
+# 一并摘除——DWM 恰恰靠 WS_CAPTION 触发最小化/最大化/还原补间动画，摘掉后动画全
+# 部瞬时跳变；拖动也退化为轮询 SetWindowPos（不跟手、Snap 硬编）。现在恢复
+# WS_CAPTION（系统栏由 WM_NCCALCSIZE return 0 隐藏），原生拖动/缩放/动画全部回归。
+_NATIVE_DRAG = True            # True=WM_NCLBUTTONDOWN(HTCAPTION/HTxxx) 交还原生循环；False=退化为轮询（仅诊断用）
 _fullscreen: dict = {}         # title -> 是否全屏（自建全屏，不走 pywebview toggle_fullscreen）
 _restore_box: dict = {}        # title -> (l, t, r, b, was_maximized) 退出全屏时还原
 _caption_stripped: set = set() # 已降级摘掉 WS_CAPTION 的窗口（WndProc 装不上的保底）
@@ -291,6 +292,59 @@ def start_manual_drag(hwnd) -> bool:
         return False
 
 
+def _native_nc_down(h, hit: int) -> None:
+    """向窗口发 SendMessage(WM_NCLBUTTONDOWN, hit)，命中本 WndProc → 交还原始
+    Form 展开系统 modal 移动/缩放循环。独立线程避免阻塞 HTTP 调用线程。"""
+    _setup_user32()
+    try:
+        ctypes.windll.user32.SendMessageW(int(h), WM_NCLBUTTONDOWN, hit, 0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def start_native_drag(hwnd) -> bool:
+    """原生拖动 + Aero Snap（系统 modal 循环，跟手顺滑）。/api/window/drag 主路径。
+
+    替代旧 start_manual_drag 的 16ms 轮询 SetWindowPos（不跟手、Snap 硬编）。
+    caption 在位后，SendMessage(WM_NCLBUTTONDOWN, HTCAPTION) 命中 WndProc →
+    交还原始 DefWindowProc 展开系统移动循环：拖到顶部最大化预览、贴边左右半屏
+    全部原生。
+    """
+    try:
+        h = hwnd if isinstance(hwnd, ctypes.c_void_p) else ctypes.c_void_p(int(hwnd))
+        user32 = ctypes.windll.user32
+        if user32.IsZoomed(h) or user32.IsIconic(h):
+            return False
+        threading.Thread(target=_native_nc_down, args=(int(h), HTCAPTION), daemon=True).start()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def start_native_resize(hwnd, edges: str) -> bool:
+    """原生边缘缩放（系统 modal 循环）。/api/window/resize 主路径，替代轮询模拟。
+
+    edges 形如 "right" / "top,left"（前端 edgeZone 生成），映射为 HTxxx 命中码，
+    经 WM_NCLBUTTONDOWN 交 DefWindowProc 展开系统缩放循环。
+    """
+    try:
+        h = hwnd if isinstance(hwnd, ctypes.c_void_p) else ctypes.c_void_p(int(hwnd))
+        user32 = ctypes.windll.user32
+        if user32.IsZoomed(h) or user32.IsIconic(h):
+            return False
+        hit = {
+            "left": HTLEFT, "right": HTRIGHT, "top": HTTOP, "bottom": HTBOTTOM,
+            "top,left": HTTOPLEFT, "top,right": HTTOPRIGHT,
+            "bottom,left": HTBOTTOMLEFT, "bottom,right": HTBOTTOMRIGHT,
+        }.get((edges or "").strip().lower().replace(" ", ""))
+        if not hit:
+            return False
+        threading.Thread(target=_native_nc_down, args=(int(h), hit), daemon=True).start()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # 每窗口的 WndProc 状态：orig proc / 异常计数 / 是否已死（键 = 窗口标题）
 _orig_wndproc: dict = {}
 _state_box: dict = {}
@@ -455,25 +509,20 @@ def _make_wndproc(title: str, min_w: int, min_h: int, intercept_close: bool):
                         params.rgrc[0] = mi.rcWork
                 return 0
             if msg == WM_NCLBUTTONDOWN:
-                # HTCAPTION 命中后鼠标消息交给顶层窗口（不进 WebView2，DOM 拿不到
-                # mousedown）。主路径：ReleaseCapture + SC_MOVE|HTCAPTION 启动系统
-                # 原生移动循环（跟手 + Aero Snap：拖到边缘半屏吸附、拖到顶部最大化
-                # 预览）。⚠️ 必须 SendMessage 同步进入（modal loop 嵌在本次派发内，
-                # 循环结束即返回）；PostMessage 异步会被 WinForms 消息泵延迟/吞掉。
-                # 回退：自绘轮询拖动（start_manual_drag）。
-                if wparam == HTCAPTION:
-                    if _NATIVE_DRAG:
+                # 原生拖/缩放（caption 在位，系统路径可用）：HTCAPTION/HTxxx 命中后
+                # ReleaseCapture 并把消息**交还原始 WinForms Form WndProc**，由
+                # DefWindowProc 展开系统 modal 移动/缩放循环——跟手、Aero Snap
+                #（顶部最大化预览 / 左右半屏）与多屏判定全原生顺滑。
+                # ⚠️ 不能用 WM_SYSCOMMAND(SC_MOVE/SC_SIZE)：WinForms 对 WM_SYSCOMMAND
+                # 有托管处理会吞掉。仅当原始 proc 缺失（窗口晚建）时退回自绘轮询。
+                _resize_hits = (HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
+                                HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT)
+                if wparam == HTCAPTION or wparam in _resize_hits:
+                    if _NATIVE_DRAG and _orig_wndproc.get(title):
                         user32.ReleaseCapture()
-                        user32.SendMessageW(h, WM_SYSCOMMAND, SC_MOVE + HTCAPTION, lparam)
-                        return 0
-                    start_manual_drag(h)
-                    return 0
-                # 边缘缩放兜底：统一走系统缩放循环（SC_SIZE|HTxxx），
-                # 不依赖 WinForms 是否把消息转发给 DefWindowProc。
-                if wparam in (HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
-                              HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT):
-                    user32.ReleaseCapture()
-                    user32.SendMessageW(h, WM_SYSCOMMAND, SC_SIZE + wparam, lparam)
+                        return user32.CallWindowProcW(_orig_wndproc[title], h, msg, wparam, lparam)
+                    if wparam == HTCAPTION:
+                        start_manual_drag(h)
                     return 0
             if msg == WM_NCLBUTTONDBLCLK:
                 # 标题栏双击最大化/还原（同理：DOM dblclick 收不到）
@@ -581,30 +630,25 @@ def _install_window_logic(title: str, min_w: int, min_h: int,
         _orig_wndproc[title] = 0
 
     GWL_STYLE = -16
-    # frameless（无 WS_CAPTION / WS_BORDER）+ 自绘标题栏；thickframe 仅供
-    # 边缘缩放手柄，min/max/sysmenu 仍保留供自绘按钮 / Alt+Space 菜单使用。
-    # 沙箱 Edge 截图确认：frameless 真正干净后 .app 内容从 0,0 开始无横条。
-    # （上一轮为了拿原生 min/max 补间动画加回 WS_CAPTION，但该位会让系统绘制
-    # 标准标题栏——NCCALCSIZE return 0 只是把客户区撑到全窗，并不会阻止绘制。
-    # 真机视觉上仍出现"系统栏+自绘栏"两层框，用户已反馈去此变化，回到 frameless。
-    # ⚠️ Windows 样式位是 OR 累加的：pywebview frameless=True 会让 FormBorderStyle
-    # 抑制绘制，但底层 style 仍含 WS_CAPTION 和 WS_BORDER；这里必须显式
-    # AND ~WS_CAPTION / AND ~WS_BORDER 摘掉，否则系统栏 + DWM accent 细边
-    # 会继续可见。
-    WS_CAPTION = 0x00C00000
-    WS_BORDER = 0x00800000
+    # ⚠️ 加回 WS_CAPTION —— 这是 DWM 原生窗口管理动画（最小化→任务栏 / 还原 /
+    # 最大化-缩回补间）的触发前提；摘掉后所有状态切换皆为瞬时跳变（用户反复
+    # 反馈"无动画"）。系统标题栏不会显示：由本 WndProc 的 WM_NCCALCSIZE 返回 0
+    # 吃掉整个非客户区（微软官方自定义标题栏方案），且 DWM accent 细边由
+    # _apply_dwm 的 DWMWA_BORDER_COLOR=透明 去除 → 无系统栏、无蓝条、无两层框，
+    # 同时保留原生动画与阴影。thickframe 保留供边缘缩放手柄，min/max/sysmenu
+    # 供自绘按钮 / Alt+Space 菜单。
+    WS_CAPTION = 0x00C00000   # = WS_BORDER(0x00800000) | WS_DLGFRAME(0x00400000)
     WS_THICKFRAME, WS_MINIMIZEBOX = 0x00040000, 0x00020000
     WS_MAXIMIZEBOX, WS_SYSMENU = 0x00010000, 0x00080000
-    WS_OVERLAPPED, WS_POPUP = 0x00000000, 0x80000000
+    WS_POPUP = 0x80000000
     style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE)) & 0xFFFFFFFF
     if style:
-        # ⚠️ pywebview frameless 底层是 WS_POPUP：弹窗窗口被 DWM 排除在窗口管理
-        # 动画（最小化→任务栏/还原/最大化-缩回）之外 → 全成瞬时跳变。必须转回
-        # WS_OVERLAPPED（清掉 popup 位即可，overlapped=0）才能拿回原生动画；
-        # 同时仍摘 WS_CAPTION/WS_BORDER，保持完全无框（自绘标题栏，无系统栏/蓝条）。
-        style = (((style & ~WS_POPUP) | WS_THICKFRAME | WS_MINIMIZEBOX
-                  | WS_MAXIMIZEBOX | WS_SYSMENU)
-                 & ~WS_CAPTION & ~WS_BORDER) & 0xFFFFFFFF
+        # pywebview frameless 底层是 WS_POPUP（不含 caption 位）。弹窗窗口被 DWM
+        # 排除在窗口管理动画之外 → 必须清 popup 转回 WS_OVERLAPPED 并 OR 上
+        # WS_CAPTION，动画才恢复。caption 隐含的边框被 WM_NCCALCSIZE return 0
+        # 吃掉，可见层仍是完全无框。
+        style = (((style & ~WS_POPUP) | WS_CAPTION | WS_THICKFRAME
+                  | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)) & 0xFFFFFFFF
         user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style)
     # DWM 防御：确保系统过渡动画未被禁用（DWMWA_TRANSITIONS_FORCEDISABLED = FALSE）
     try:
@@ -636,10 +680,55 @@ def _install_window_logic(title: str, min_w: int, min_h: int,
     return True
 
 
-def _strip_caption(title: str) -> bool:
-    """保底 no-op：主路径已 frameless（不 OR WS_CAPTION），无 caption 可摘。
+def _ensure_caption_now(hwnd) -> bool:
+    """在状态切换前，于当前线程同步把窗口样式钳为“WS_OVERLAPPED + WS_CAPTION…”，
+    确保 DWM 以“普通顶层窗口”身份识别该窗口并播放最小化/最大化/还原补间动画。
 
-    保留以备未来若回退加 WS_CAPTION 时能立即清理；当前 st & 0x00C00000 恒为 0。
+    SetWindowLongPtr 跨线程安全，可在 HTTP worker 线程直接调用；任何字段有差异
+    才整体重写一次（避免无谓触发 FRAMECHANGED 打断进行中的动画）。
+    """
+    try:
+        _setup_user32()
+        user32 = ctypes.windll.user32
+        st = int(user32.GetWindowLongPtrW(hwnd, -16)) & 0xFFFFFFFF
+        WANT = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000
+        want = ((st & ~0x80000000) | WANT) & 0xFFFFFFFF  # 清 popup、补 caption…
+        if want != st:
+            user32.SetWindowLongPtrW(hwnd, -16, want)
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x4 | 0x1 | 0x2 | 0x20)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _managed_state_change(win, action: str) -> bool:
+    """经 pywebview/WinForms 托管接口切换窗口状态，保持 Win32 与托管
+    WindowState 同步——这是 DWM 原生最小化/最大化/还原补间动画的正规触发路径
+    （直接 user32.ShowWindow 会绕过托管状态，造成 WinForms 内部 desync）。
+
+    pywebview 内部经 self.Invoke(Func[Type](_set_state)) 投递到 GUI 线程，
+    故可从 HTTP worker 线程安全调用。
+    """
+    try:
+        if action == "minimize":
+            win.minimize()
+        elif action == "maximize":
+            win.maximize()
+        elif action == "restore":
+            win.restore()
+        else:
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _strip_caption(title: str) -> bool:
+    """保底：确保 WS_CAPTION 在位（动画所需）——若被 pywebview 误摘则补回。
+
+    函数名沿用历史（曾用于"摘 caption 兜底"），现语义反转为"保 caption"。
+    WndProc 正常时本函数通常不会被调用；仅在窗口迟迟打不上 WndProc 的极端
+    兜底路径下，为不缺失原生动画仍尽力补 caption（系统栏由 _apply_dwm 去边框）。
     """
     try:
         _setup_user32()
@@ -647,13 +736,12 @@ def _strip_caption(title: str) -> bool:
         hwnd = user32.FindWindowW(None, title)
         if not hwnd:
             return False
-        st = user32.GetWindowLongPtrW(hwnd, -16)
-        if st & 0x00C00000:
-            user32.SetWindowLongPtrW(hwnd, -16, st & ~0x00C00000)
+        st = int(user32.GetWindowLongPtrW(hwnd, -16)) & 0xFFFFFFFF
+        want = ((st & ~0x80000000) | 0x00C00000) & 0xFFFFFFFF  # 清 popup、补 caption
+        if want != st:
+            user32.SetWindowLongPtrW(hwnd, -16, want)
             user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x4 | 0x1 | 0x2 | 0x20)
-        _caption_stripped.add(title)
-        if st & 0x00C00000:
-            _log(f"[wndproc] {title} 降级：摘掉 WS_CAPTION（无原生动画，但绝无系统框）")
+            _log(f"[wndproc] {title} 兜底：补回 WS_CAPTION（保原生动画）")
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -685,28 +773,27 @@ def _ensure_window_logic(title: str, min_w: int, min_h: int,
 
 
 def _guard_frameless(title: str) -> None:
-    """frameless 守护线程：每 0.5s 归一化窗口 GWL_STYLE 为
-    “WS_OVERLAPPED + THICKFRAME + MIN/MAX + SYSMENU，无 WS_CAPTION/BORDER”。
-    这是保持【原生最小化/最大化/还原动画】且【无系统栏/无蓝条】的唯一稳定样式：
-    · 摘 WS_CAPTION/WS_BORDER —— 免系统标题栏与 DWM 1px accent 细边；
-    · 清 WS_POPUP 位（pywebview frameless 底层是 popup）—— 弹窗窗口无窗口管理
-      动画，必须转回 overlapped 才有动画；
-    · 保留 THICKFRAME/MIN/MAX/SYSMENU —— 供边缘缩放 / 自绘按钮 / Alt+Space。
-    pywebview 在 show / resize / focus 等时机可能重设 style 破坏该形状，故持续维护。
-    任一字段不同即整体重写一次（避免无谓 SetWindowLongPtr 打断动画）。
+    """保 caption 守护线程：每 0.5s 确保窗口 GWL_STYLE 处于
+    “WS_OVERLAPPED + WS_CAPTION + THICKFRAME + MIN/MAX + SYSMENU”（原生动画所需）。
+    现在是"有原生动画 + 无系统框"：caption 在位供 DWM 播放最小化/最大化/还原补间，
+    系统栏与边框由 WM_NCCALCSIZE return 0 + DWM 边框透明隐藏。
+    · 清 WS_POPUP（pywebview frameless 底层是 popup）—— 弹窗窗口无窗口管理动画；
+    · 保留 WS_CAPTION/THICKFRAME/MIN/MAX/SYSMENU —— caption 供动画，thickframe
+      供边缘缩放，min/max/sysmenu 供自绘按钮 / Alt+Space。
+    pywebview 在 show / resize / focus 等时机可能重设 style 摘掉 caption，故持续维护。
+    任一字段不同才整体重写一次（避免无谓 SetWindowLongPtr 打断动画）。
     窗口销毁时 FindWindowW 返回 0，安全退出。
     """
     _setup_user32()
     user32 = ctypes.windll.user32
-    WANT = (0x00040000 | 0x00020000 | 0x00010000 | 0x00080000)  # THICKFRAME|MIN|MAX|SYSMENU
-    BAD = 0x00C00000 | 0x00800000                                   # WS_CAPTION | WS_BORDER
+    WANT = (0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000)  # CAPTION|THICKFRAME|MIN|MAX|SYSMENU
+    BAD = 0x80000000                                                     # WS_POPUP
     while True:
         try:
             hwnd = user32.FindWindowW(None, title)
             if hwnd:
                 st = int(user32.GetWindowLongPtrW(int(hwnd), -16)) & 0xFFFFFFFF
-                want = ((st & ~BAD & 0xFFFFFFFF)
-                        | WANT) & ~0x80000000 & 0xFFFFFFFF
+                want = ((st & ~BAD) | WANT) & 0xFFFFFFFF
                 if want != st:
                     user32.SetWindowLongPtrW(int(hwnd), -16, want)
                     user32.SetWindowPos(int(hwnd), 0, 0, 0, 0, 0,
@@ -800,6 +887,10 @@ def _show_reader_window() -> None:
     user32 = ctypes.windll.user32
     hwnd = gui_server.get_reader_hwnd()
     if not hwnd:
+        _log("[reader] SW_SHOW 跳过：reader_hwnd 未注册")
+        return
+    if not user32.IsWindow(hwnd):
+        _log(f"[reader] SW_SHOW 跳过：hwnd 已失效 hwnd={int(hwnd)}")
         return
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
@@ -819,6 +910,7 @@ def _show_reader_window() -> None:
     user32.ShowWindow(hwnd, 5)  # SW_SHOW
     user32.SetForegroundWindow(hwnd)
     _reader_visible[0] = True
+    _log(f"[reader] SW_SHOW reader_hwnd={int(hwnd)}")
     # SW_HIDE→SW_SHOW 无系统过渡动画（窗口弹出是瞬时的）→ 前端补一段
     # 220ms 渐显（win-reveal），阅读窗呼出更柔和。evaluate_js 内部会
     # marshaling 到 GUI 线程，worker 线程调用安全；失败不影响打开。
@@ -837,11 +929,18 @@ def open_reader(album: str, title: str = "", chapter: str = "") -> dict:
     - 同专辑换章节或换专辑：导航到 ?w=reader&album=…[&ch=…] 后显示。
     由 HTTP worker 线程调用；操作全部走 hwnd 消息 + pywebview Window
     导航（pywebview 内部 marshaling 到 GUI 线程，线程安全）。
+    诊断日志写 logs/desktop.log，配合排查"阅读窗未出现/误开浏览器"。
     """
     from urllib.parse import quote
 
     if not _win_reader:
+        _log("[reader] open_reader 失败：_win_reader 为空（阅读窗未创建）")
         return {"ok": False, "error": "reader window not ready"}
+    hwnd = gui_server.get_reader_hwnd()
+    if not hwnd:
+        _log("[reader] open_reader 提示：reader_hwnd 未注册（将继续导航，稍后显示）")
+    _log(f"[reader] open_reader album={album!r} title={title!r} chapter={chapter!r} "
+         f"reader_hwnd={hwnd} _win_reader={len(_win_reader)}")
     base = _server_ref[0].base_url if _server_ref and _server_ref[0] else "http://127.0.0.1"
     win = _win_reader[0]
     chapter = str(chapter or "").strip()
@@ -880,22 +979,60 @@ def close_reader() -> dict:
 
 
 def toggle_reader_maximize() -> dict:
+    """阅读窗 最大化/还原（托管 API 保持 WinForms WindowState 同步 → 原生补间）。"""
+    if not _win_reader:
+        return {"ok": False, "error": "window not ready"}
     hwnd = gui_server.get_reader_hwnd()
     if not hwnd:
         return {"ok": False, "error": "window not ready"}
+    _ensure_caption_now(hwnd)
     user32 = ctypes.windll.user32
-    # 同步 ShowWindow 走系统标准补间动画（PostMessage WM_SYSCOMMAND 在本壳下
-    # 偶发被 GUI 队列吞掉不生效→既无动作也无动画，故换成同步状态切换）
-    user32.ShowWindow(
-        int(hwnd), SW_RESTORE if user32.IsZoomed(hwnd) else SW_MAXIMIZE)
+    action = "restore" if user32.IsZoomed(hwnd) else "maximize"
+    if not _managed_state_change(_win_reader[0], action):
+        # 托管失败才退回同步 ShowWindow（仍带 caption → 系统补间）
+        user32.ShowWindow(int(hwnd), SW_RESTORE if user32.IsZoomed(hwnd) else SW_MAXIMIZE)
     return {"ok": True}
 
 
 def minimize_reader() -> dict:
+    """阅读窗 最小化（托管 API 保动画；失败退回 ShowWindow）。"""
+    if not _win_reader:
+        return {"ok": False, "error": "window not ready"}
     hwnd = gui_server.get_reader_hwnd()
-    if hwnd:
-        # 同步 ShowWindow(SW_MINIMIZE) → 系统标准最小化动画（PostMessage 偶发被吞）
+    if not hwnd:
+        return {"ok": False, "error": "window not ready"}
+    _ensure_caption_now(hwnd)
+    if not _managed_state_change(_win_reader[0], "minimize"):
         ctypes.windll.user32.ShowWindow(int(hwnd), SW_MINIMIZE)
+    return {"ok": True}
+
+
+def minimize_main() -> dict:
+    """主窗 最小化（托管 API 保动画；失败退回 ShowWindow）。"""
+    if not _win_main:
+        return {"ok": False, "error": "window not ready"}
+    hwnd = gui_server.get_main_hwnd()
+    if not hwnd:
+        return {"ok": False, "error": "window not ready"}
+    _ensure_caption_now(hwnd)
+    if not _managed_state_change(_win_main[0], "minimize"):
+        _setup_user32()
+        ctypes.windll.user32.ShowWindow(int(hwnd), SW_MINIMIZE)
+    return {"ok": True}
+
+
+def toggle_main_maximize() -> dict:
+    """主窗 最大化/还原（托管 API 保持 WinForms WindowState 同步 → 原生补间）。"""
+    if not _win_main:
+        return {"ok": False, "error": "window not ready"}
+    hwnd = gui_server.get_main_hwnd()
+    if not hwnd:
+        return {"ok": False, "error": "window not ready"}
+    _ensure_caption_now(hwnd)
+    user32 = ctypes.windll.user32
+    action = "restore" if user32.IsZoomed(hwnd) else "maximize"
+    if not _managed_state_change(_win_main[0], action):
+        user32.ShowWindow(int(hwnd), SW_RESTORE if user32.IsZoomed(hwnd) else SW_MAXIMIZE)
     return {"ok": True}
 
 
@@ -919,30 +1056,29 @@ def _show_window(force_center: bool = True) -> None:
 
 
 def _frame_style(hwnd, *, fullscreen: bool) -> None:
-    """按全屏状态应用窗口框架样式。
+    """按全屏状态应用窗口框架样式（保留 WS_CAPTION —— 原生动画所需）。
 
-    frameless（无 WS_CAPTION / WS_BORDER）：常态仅 thickframe 供边缘缩放手柄；
-    - fullscreen=True：临时摘掉 WS_THICKFRAME —— 系统不会再把窗口让出任务栏
-      区域或画边框，由 SetWindowPos 直接铺满显示器（含任务栏区）；
-    - fullscreen=False：恢复 thickframe（frameless 自绘栏态）。
-    防御性显式 `& ~WS_CAPTION & ~WS_BORDER`：pywebview frameless=True 后底层
-    style 仍可能含 caption + border，每次刷样式都摘掉。
+    ws 目标：WS_OVERLAPPED + WS_CAPTION + THICKFRAME(常态) + MIN/MAX/SYSMENU。
+    - fullscreen=True：临时摘掉 WS_THICKFRAME —— 系统不再让出任务栏区域，由
+      SetWindowPos 直接铺满显示器（含任务栏区）；caption 保留（NCCALCSIZE 全屏
+      分支 return 0 不上 rcWork），DWM 动画仍可用。
+    - fullscreen=False：恢复 thickframe（含 caption 的原生动画自绘栏态）。
+    系统栏不显示：WM_NCCALCSIZE return 0 + DWM 边框透明；此处不再摘 caption。
     """
     _setup_user32()
     user32 = ctypes.windll.user32
     GWL_STYLE = -16
-    WS_CAPTION, WS_BORDER = 0x00C00000, 0x00800000
+    WS_CAPTION = 0x00C00000
     WS_THICKFRAME = 0x00040000
     WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_SYSMENU = 0x00020000, 0x00010000, 0x00080000
     style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE)) & 0xFFFFFFFF
     if style:
-        style = (style & ~0x80000000) | 0x00000000  # WS_POPUP → WS_OVERLAPPED（保动画）
+        style = (style & ~0x80000000) & 0xFFFFFFFF  # WS_POPUP → WS_OVERLAPPED（保动画）
         if fullscreen:
-            style &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME)
+            style &= ~WS_THICKFRAME                 # 仅摘缩放手柄，caption 保留
         else:
-            style = (((style | WS_THICKFRAME | WS_MINIMIZEBOX
-                       | WS_MAXIMIZEBOX | WS_SYSMENU)
-                      & ~WS_CAPTION & ~WS_BORDER))
+            style = (style | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX
+                     | WS_MAXIMIZEBOX | WS_SYSMENU) & 0xFFFFFFFF
         user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x4 | 0x1 | 0x2 | 0x20)  # FRAMECHANGED
     _apply_dwm(hwnd, rounded=not fullscreen)  # 全屏直角、常态圆角且无系统细框

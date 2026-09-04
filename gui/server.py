@@ -202,21 +202,24 @@ def window_action(action: str, qs: dict | None = None) -> dict:
             return {"ok": True, "maximized": bool(user32.IsZoomed(hwnd)),
                     "fullscreen": gui_desktop.fullscreen_state("reader")}
         if action == "drag":
-            try:
-                if gui_desktop.start_manual_drag(hwnd):
-                    return {"ok": True}
-            except Exception:  # noqa: BLE001
-                pass
+            # 原生系统移动循环（WndProc 交还原生 Form → DefWindowProc，跟手+Snap）；
+            # 失败退回轮询模拟，保证拖动永远可用。
+            for starter in (gui_desktop.start_native_drag, gui_desktop.start_manual_drag):
+                try:
+                    if starter(hwnd):
+                        return {"ok": True}
+                except Exception:  # noqa: BLE001
+                    continue
             _post(hwnd, WM_APP_MOVERESIZE, HTCAPTION)
             return {"ok": True}
         if action == "resize":
-            # 边缘缩放：WebView2 盖满客户区 → WndProc 收不到边缘 NCLBUTTONDOWN，
-            # 由 DOM 边缘 mousedown（带 edges 参数）发起轮询缩放实现。
-            try:
-                if gui_desktop.start_manual_resize(hwnd, str(qs.get("edges") or "")):
-                    return {"ok": True}
-            except Exception:  # noqa: BLE001
-                pass
+            # 边缘缩放：优先原生系统缩放循环（交 DefWindowProc），失败退回轮询模拟。
+            for starter in (gui_desktop.start_native_resize, gui_desktop.start_manual_resize):
+                try:
+                    if starter(hwnd, str(qs.get("edges") or "")):
+                        return {"ok": True}
+                except Exception:  # noqa: BLE001
+                    continue
             return {"ok": False, "error": "resize unavailable"}
         return {"ok": False, "error": f"unknown action: {action}"}
 
@@ -238,11 +241,21 @@ def window_action(action: str, qs: dict | None = None) -> dict:
     if not hwnd:
         return {"ok": False, "error": "window not ready"}
     if action == "minimize":
-        # 同步 ShowWindow(SW_MINIMIZE) → 系统标准最小化动画（PostMessage 偶发被吞不生效）
-        user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+        # 经 pywebview/WinForms 托管接口最小化（保持 WindowState 同步 → 原生补间动画）
+        try:
+            from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
+
+            return gui_desktop.minimize_main()
+        except Exception:  # noqa: BLE001 兜底：直接 ShowWindow（仍带 caption → 系统补间）
+            user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
     elif action == "toggle-maximize":
-        # 同步 ShowWindow → 走系统补间动画（PostMessage WM_SYSCOMMAND 在本壳下偶发被吞）
-        user32.ShowWindow(hwnd, 9 if _is_zoomed(hwnd) else 3)  # SW_RESTORE=9 / SW_MAXIMIZE=3
+        # 经托管接口最大化/还原（保持 WindowState 同步 → 原生补间动画）
+        try:
+            from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
+
+            return gui_desktop.toggle_main_maximize()
+        except Exception:  # noqa: BLE001 兜底：直接 ShowWindow
+            user32.ShowWindow(hwnd, 9 if _is_zoomed(hwnd) else 3)  # SW_RESTORE=9 / SW_MAXIMIZE=3
     elif action == "toggle-fullscreen":
         try:
             from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
@@ -258,12 +271,13 @@ def window_action(action: str, qs: dict | None = None) -> dict:
         except Exception:  # noqa: BLE001
             return {"ok": False, "error": "wndproc-status unavailable"}
     elif action == "drag":
-        # 主路径：WndProc 接管 WM_NCLBUTTONDOWN（标题栏 HTCAPTION 不进 DOM）。
-        # 这里是兜底——WndProc 因窗口晚建等原因未安装时，前端 mousedown 仍能
-        # 到达 DOM，由后端直接拉起拖动循环，保证拖动永远可用。
+        # 主路径：原生系统移动循环（WndProc 交还原生 Form → DefWindowProc，
+        # 跟手 + Aero Snap）；失败再退回轮询模拟，保证拖动永远可用。
         try:
             from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
 
+            if gui_desktop.start_native_drag(hwnd):
+                return {"ok": True}
             if gui_desktop.start_manual_drag(hwnd):
                 return {"ok": True}
         except Exception:  # noqa: BLE001 兜底失败再退回消息路径
@@ -289,11 +303,12 @@ def window_action(action: str, qs: dict | None = None) -> dict:
         return {"ok": True, "maximized": bool(user32.IsZoomed(hwnd)),
                 "fullscreen": fs}
     elif action == "resize":
-        # 边缘缩放：WebView2 盖满客户区 → WndProc 收不到边缘 NCLBUTTONDOWN，
-        # 由 DOM 边缘 mousedown（带 edges 参数）发起轮询缩放实现。
+        # 边缘缩放：优先原生系统缩放循环（WndProc 交还原生 Form），失败退回轮询。
         try:
             from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
 
+            if gui_desktop.start_native_resize(hwnd, str(qs.get("edges") or "")):
+                return {"ok": True}
             if gui_desktop.start_manual_resize(hwnd, str(qs.get("edges") or "")):
                 return {"ok": True}
         except Exception:  # noqa: BLE001
