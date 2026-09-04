@@ -12,6 +12,16 @@
   “蓝条”；同时 `DWMWA_TRANSITIONS_FORCEDISABLED=FALSE`（attr 3）确认动画
   不被误禁用。从而兼顾“无蓝条”与“动画流畅”。
 
+### 最小化/最大化/还原动画的真正根因：WS_POPUP
+- **根源**：pywebview 的 frameless 窗体底层是 `WS_POPUP`（FormBorderStyle=None），
+  而**弹窗窗口被 DWM 排除在窗口管理动画之外**（最小化→任务栏 / 还原 /
+  最大化-缩回全成瞬时跳变）。此前纠结 WS_CAPTION 的方向是错的。
+- **修复**：把窗口底样从 `WS_POPUP` 改回 `WS_OVERLAPPED`（清掉 popup 位，
+  overlapped=0），同时保留 `WS_THICKFRAME|MINIMIZEBOX|MAXIMIZEBOX|SYSMENU`、
+  摘掉 `WS_CAPTION|WS_BORDER`。overlapped 无框窗口在 DWM 下原生动画齐全，
+  且仍完全无框（无系统栏/无蓝条）。`_frame_style`/prev guard 等三处样式设置
+  与全屏路径同步修正，守护线程亦归一化该样式防止 pywebview 重设破坏。
+
 ### 主窗原生入场动画（不再“瞬间弹出”）
 - **弃用 AnimateWindow**：曾用 `AnimateWindow(AW_ACTIVATE|AW_BLEND)` 做整窗
   淡入——实测会致 WebView2 内容不重绘（内容消失）且动画不触发，已回退

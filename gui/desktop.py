@@ -595,11 +595,16 @@ def _install_window_logic(title: str, min_w: int, min_h: int,
     WS_BORDER = 0x00800000
     WS_THICKFRAME, WS_MINIMIZEBOX = 0x00040000, 0x00020000
     WS_MAXIMIZEBOX, WS_SYSMENU = 0x00010000, 0x00080000
-    style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
+    WS_OVERLAPPED, WS_POPUP = 0x00000000, 0x80000000
+    style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE)) & 0xFFFFFFFF
     if style:
-        style = ((style | WS_THICKFRAME | WS_MINIMIZEBOX
+        # ⚠️ pywebview frameless 底层是 WS_POPUP：弹窗窗口被 DWM 排除在窗口管理
+        # 动画（最小化→任务栏/还原/最大化-缩回）之外 → 全成瞬时跳变。必须转回
+        # WS_OVERLAPPED（清掉 popup 位即可，overlapped=0）才能拿回原生动画；
+        # 同时仍摘 WS_CAPTION/WS_BORDER，保持完全无框（自绘标题栏，无系统栏/蓝条）。
+        style = (((style & ~WS_POPUP) | WS_THICKFRAME | WS_MINIMIZEBOX
                   | WS_MAXIMIZEBOX | WS_SYSMENU)
-                 & ~WS_CAPTION & ~WS_BORDER)
+                 & ~WS_CAPTION & ~WS_BORDER) & 0xFFFFFFFF
         user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style)
     # DWM 防御：确保系统过渡动画未被禁用（DWMWA_TRANSITIONS_FORCEDISABLED = FALSE）
     try:
@@ -680,22 +685,30 @@ def _ensure_window_logic(title: str, min_w: int, min_h: int,
 
 
 def _guard_frameless(title: str) -> None:
-    """frameless 守护线程：每 0.5s 扫一次主窗 + 阅读窗 GWL_STYLE，
-    显式 `& ~WS_CAPTION` + `& ~WS_BORDER` 摘位。pywebview 在 show / resize /
-    focus 等时机可能重新 set style 把 WS_CAPTION 和 WS_BORDER 加回来——
-    无守护时会出现"系统栏+自绘栏"两层框 + DWM accent 1px 细边。
+    """frameless 守护线程：每 0.5s 归一化窗口 GWL_STYLE 为
+    “WS_OVERLAPPED + THICKFRAME + MIN/MAX + SYSMENU，无 WS_CAPTION/BORDER”。
+    这是保持【原生最小化/最大化/还原动画】且【无系统栏/无蓝条】的唯一稳定样式：
+    · 摘 WS_CAPTION/WS_BORDER —— 免系统标题栏与 DWM 1px accent 细边；
+    · 清 WS_POPUP 位（pywebview frameless 底层是 popup）—— 弹窗窗口无窗口管理
+      动画，必须转回 overlapped 才有动画；
+    · 保留 THICKFRAME/MIN/MAX/SYSMENU —— 供边缘缩放 / 自绘按钮 / Alt+Space。
+    pywebview 在 show / resize / focus 等时机可能重设 style 破坏该形状，故持续维护。
+    任一字段不同即整体重写一次（避免无谓 SetWindowLongPtr 打断动画）。
     窗口销毁时 FindWindowW 返回 0，安全退出。
     """
     _setup_user32()
     user32 = ctypes.windll.user32
-    REMOVE_MASK = ~(0x00C00000 | 0x00800000)  # WS_CAPTION | WS_BORDER
+    WANT = (0x00040000 | 0x00020000 | 0x00010000 | 0x00080000)  # THICKFRAME|MIN|MAX|SYSMENU
+    BAD = 0x00C00000 | 0x00800000                                   # WS_CAPTION | WS_BORDER
     while True:
         try:
             hwnd = user32.FindWindowW(None, title)
             if hwnd:
-                st = user32.GetWindowLongPtrW(int(hwnd), -16)
-                if st and (st & 0x00C00000 or st & 0x00800000):
-                    user32.SetWindowLongPtrW(int(hwnd), -16, st & REMOVE_MASK)
+                st = int(user32.GetWindowLongPtrW(int(hwnd), -16)) & 0xFFFFFFFF
+                want = ((st & ~BAD & 0xFFFFFFFF)
+                        | WANT) & ~0x80000000 & 0xFFFFFFFF
+                if want != st:
+                    user32.SetWindowLongPtrW(int(hwnd), -16, want)
                     user32.SetWindowPos(int(hwnd), 0, 0, 0, 0, 0,
                                         0x4 | 0x1 | 0x2 | 0x20)  # FRAMECHANGED
                     _apply_dwm(int(hwnd), rounded=True)
@@ -921,15 +934,16 @@ def _frame_style(hwnd, *, fullscreen: bool) -> None:
     WS_CAPTION, WS_BORDER = 0x00C00000, 0x00800000
     WS_THICKFRAME = 0x00040000
     WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_SYSMENU = 0x00020000, 0x00010000, 0x00080000
-    st = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
-    if st:
+    style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE)) & 0xFFFFFFFF
+    if style:
+        style = (style & ~0x80000000) | 0x00000000  # WS_POPUP → WS_OVERLAPPED（保动画）
         if fullscreen:
-            st &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME)
+            style &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME)
         else:
-            st = ((st | WS_THICKFRAME | WS_MINIMIZEBOX
-               | WS_MAXIMIZEBOX | WS_SYSMENU)
-              & ~WS_CAPTION & ~WS_BORDER)
-        user32.SetWindowLongPtrW(hwnd, GWL_STYLE, st)
+            style = (((style | WS_THICKFRAME | WS_MINIMIZEBOX
+                       | WS_MAXIMIZEBOX | WS_SYSMENU)
+                      & ~WS_CAPTION & ~WS_BORDER))
+        user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x4 | 0x1 | 0x2 | 0x20)  # FRAMECHANGED
     _apply_dwm(hwnd, rounded=not fullscreen)  # 全屏直角、常态圆角且无系统细框
 
