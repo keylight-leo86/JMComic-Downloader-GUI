@@ -509,7 +509,19 @@
       return;
     }
     PV.meta.textContent = "「" + s.query + "」 · 共 " + s.total + " 本" + (s.page > 1 ? "（第 " + s.page + " 页）" : "");
-    s.items.forEach((item) => PV.grid.appendChild(albumCard(item)));
+    // stagger 入场：新搜索全部卡片波浪淡入；「加载更多」时旧卡 no-anim 不重播，
+    // 只有新增部分从 0 计数波浪淡入（--st 由 CSS animation-delay 消费）
+    const prevCount = s.renderedCount || 0;
+    s.items.forEach((item, idx) => {
+      const card = albumCard(item);
+      if (idx < prevCount) {
+        card.classList.add("no-anim");
+      } else {
+        card.style.setProperty("--st", Math.min(idx - prevCount, 11));
+      }
+      PV.grid.appendChild(card);
+    });
+    s.renderedCount = s.items.length;
     PV.moreRow.hidden = s.ended;
   }
 
@@ -1217,6 +1229,16 @@
     const aid = (q.get("album") || "").trim();
     document.body.classList.add("is-reader-win");
 
+    // 窗口呼出渐显：desktop.py 在 SW_SHOW 后经 evaluate_js 调用（阅读窗
+    // 「关闭=隐藏→打开=显示」无系统过渡动画，用 220ms 渐显补上；重播用
+    // 强制 reflow 技巧重启 CSS animation）
+    window.__readerReveal = function () {
+      document.body.classList.remove("win-reveal");
+      void document.body.offsetWidth;
+      document.body.classList.add("win-reveal");
+      setTimeout(() => document.body.classList.remove("win-reveal"), 320);
+    };
+
     // 标题栏左侧切换为「专辑名 · 章节位置」（内容由 updateReaderTitlebar 同步）
     const rdTitle = el("span", "rd-title");
     rdTitle.id = "rd-title";
@@ -1524,6 +1546,9 @@
   /* ---- 卡片 DOM（一次创建，之后仅更新文字/类名，保留日志面板状态） ---- */
   function dlCardDom(st) {
     const li = el("li", "dlv-task");
+    // 新卡入场动画：400ms 后摘类，之后轮询的 appendChild 节点重排不会重播
+    li.classList.add("is-new");
+    setTimeout(() => li.classList.remove("is-new"), 400);
     const row = el("div", "dlv-task-row");
     row.title = "点击展开 / 收起日志";
 
@@ -1607,7 +1632,7 @@
     const state = st.summary.state;
     if (state === "done") {
       st.dom.prog.hidden = false;
-      st.dom.progBar.style.width = "100%";
+      st.dom.progBar.style.transform = "scaleX(1)";
       st.dom.progText.textContent = "完成 100%";
       return;
     }
@@ -1633,6 +1658,8 @@
     const terminal = state === "done" || state === "failed" || state === "cancelled";
     st.dom.badge.className = "dlv-badge is-" + state;
     st.dom.stateEl.textContent = STATE_LABEL[state] || state;
+    // 运行态流光（CSS progSweep）随状态开关
+    if (st.dom.progBar) st.dom.progBar.classList.toggle("is-running", state === "running");
     st.dom.cancelBtn.hidden = !active;
     st.dom.retryBtn.hidden = !(state === "failed" || state === "cancelled");
     st.dom.clearBtn.hidden = !terminal;

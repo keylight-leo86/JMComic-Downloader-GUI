@@ -126,6 +126,31 @@ body.is-fullscreen .sidebar,
 body.is-fullscreen .content { border-radius: 0; }
 
 /* ==========================================================================
+   启动入场（一次性）：顶栏下落 → 侧栏左滑 → 内容上浮，stagger 递进。
+   只动 transform/opacity（合成器动画）；backwards 保证 delay 期不可见。
+   ========================================================================== */
+.titlebar { animation: bootBar 300ms var(--ease-out) backwards; }
+.sidebar  { animation: bootSide 340ms 70ms var(--ease-out) backwards; }
+.content  { animation: bootMain 380ms 140ms var(--ease-out) backwards; }
+@keyframes bootBar  { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes bootSide { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes bootMain { from { opacity: 0; transform: translateY(10px); }  to { opacity: 1; transform: none; } }
+
+/* 窗口呼出渐显：阅读窗「关闭=隐藏 / 打开=显示」没有系统过渡动画（瞬现），
+   由 desktop.py evaluate_js 调 window.__readerReveal() 重播本动画补上 */
+body.win-reveal .app { animation: winReveal 220ms var(--ease-out); }
+@keyframes winReveal {
+  from { opacity: 0; transform: scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 通用卡片入场（结果网格 stagger / 任务卡新建） */
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ==========================================================================
    标题栏：悬浮毛玻璃圆角卡（frameless 壳下自绘，可拖动）
    ========================================================================== */
 
@@ -1163,8 +1188,7 @@ body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.5
   min-height: 0;
   overflow-y: auto;
   overflow-x: auto;          /* 放大后（图片宽超出容器）可横向平移查看 */
-  transform: translateZ(0);  /* 提升为独立合成层，滚动更平滑 */
-  will-change: transform;
+  transform: translateZ(0);  /* 提升为独立合成层，滚动更平滑（不再叠加常驻 will-change，省显存） */
   background:
     radial-gradient(1200px 500px at 50% -10%, rgba(255, 170, 60, 0.05), transparent 60%),
     #171310;
@@ -1500,6 +1524,9 @@ body.is-fullscreen .pv-reader-foot button.pv-zoom-btn[data-fsbtn] {
 .dlv-tasks { list-style: none; margin: 0; padding: 0; }
 .dlv-task { border-bottom: 1px solid var(--line-soft); transition: background var(--dur-fast) var(--ease-out); }
 .dlv-task:last-child { border-bottom: none; }
+/* 新建任务卡入场（JS 建 DOM 时临时加 is-new，400ms 后移除——
+   轮询里的 appendChild 节点重排不会重播动画） */
+.dlv-task.is-new { animation: cardIn var(--dur-mid) var(--ease-out); }
 
 /* 下载历史行：复用 dlv 视觉，但整行不可点击展开 */
 .hst-row { cursor: default; }
@@ -1537,12 +1564,28 @@ body.is-fullscreen .pv-reader-foot button.pv-zoom-btn[data-fsbtn] {
   overflow: hidden;
 }
 .dlv-progress-bar {
-  width: 0;
+  width: 100%;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), #31b28a);
-  transition: width 0.25s var(--ease-out);
+  /* 修复：此前引用未定义的 var(--accent) → 整条渐变失效、进度条不可见 */
+  background: linear-gradient(90deg, var(--orange), #31b28a);
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  transition: transform 0.3s var(--ease-out);  /* scaleX 合成器动画，比 width 重排更流畅 */
+  position: relative;
+  overflow: hidden;
 }
+/* 运行态流光：一道高光从左扫到右（transform 动画，不触发布局） */
+.dlv-progress-bar.is-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: translateX(-100%);
+  animation: progSweep 1.15s var(--ease-out) infinite;
+}
+@keyframes progSweep { to { transform: translateX(100%); } }
 .dlv-progress-text {
   flex: 0 0 auto;
   font-size: 11px;

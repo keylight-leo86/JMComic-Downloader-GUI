@@ -2,6 +2,38 @@
 
 本项目遵循语义化版本号。
 
+## 未发布（窗口动画与 UI 动画全面优化 + 进度条显示修复）
+
+### 窗口动画（更流畅）
+- **Win11 保系统动画的边框处理**：`_apply_dwm` 优先用
+  `DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE`（attr 34）只隐藏系统边框描边——
+  DWM 非客户区渲染管线保持运行，最小化/还原/最大化的系统过渡动画完整保留；
+  Win10（attr 34 不支持）回退旧的 `DWMNCRP_DISABLED`。根治 1px 细边的同时
+  不再削弱窗口动画。
+- **阅读窗呼出渐显**：阅读窗「关闭=隐藏 → 打开=显示」没有系统过渡动画
+  （瞬间弹出）；`_show_reader_window` 显示后经 `evaluate_js` 调用前端
+  `window.__readerReveal()`，补一段 220ms 渐显（win-reveal）。
+- **窗口底色统一**：两处 `create_window(background_color)` 从 `#f7f4ee`
+  校准为页面 `--bg-app #f6f1e9`，与 class 背景刷一笔画齐——启动与尺寸
+  调整期不再出现色差闪变/透明块。
+
+### UI 动画（更丰富）
+- **启动入场**：顶栏下落 → 侧栏左滑 → 内容上浮，stagger 递进（只动
+  transform/opacity，合成器动画）。
+- **结果网格 stagger 入场**：新搜索卡片波浪淡入（`--st` 递增 delay）；
+  「加载更多」仅新增部分播放入场，旧卡 `no-anim` 不重播。
+- **任务卡入场**：新建下载任务卡淡入（`is-new` 类 400ms 后移除，轮询
+  重排不重播）。
+- **进度条升级**：修复引用未定义 `var(--accent)` 导致渐变失效、进度条
+  不可见的显示 BUG；`width` 过渡改为 `transform: scaleX()` 合成器动画
+  （不再触发重排）；运行态加流光扫过效果（progSweep）。
+- **滚动性能**：`.pv-reader-scroll` 移除常驻 `will-change: transform`
+  （保留 `translateZ(0)` 合成层提升，省显存）。
+
+### 实现与验证
+- 改动文件：`gui/desktop.py` / `static/js/app.js` / `static/css/app.css` / `CHANGELOG.md`
+- `python -m py_compile` 与 `node --check` 均通过；需打包实机验证动画观感。
+
 ## 未发布（窗口动画平滑 + 透明区填充 + 阅读器 Ctrl 滚轮缩放）
 
 ### 窗口动画流畅度（主窗 + 阅读器）

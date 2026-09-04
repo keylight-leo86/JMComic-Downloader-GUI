@@ -358,24 +358,29 @@ def _setup_user32() -> None:
 
 
 def _apply_dwm(hwnd, *, rounded: bool = True) -> None:
-    """DWM：关闭非客户区渲染，根治 frameless 下的 1px accent/白细边残留。
+    """DWM：消除 frameless 下的 1px accent/白细边，同时保住系统窗口动画。
 
     frameless 壳即使摘掉 WS_CAPTION/WS_BORDER，为保留边缘缩放手柄仍带
-    WS_THICKFRAME，此时 Win11 的 DWM 会在窗口四周绘制非客户区（accent 色
-    细边框 + 圆角）——即 UI 顶部那条 1px 蓝/白线。把它们画出来的是 DWM，不是
-    HTML。置 DWMWA_NCRENDERING_POLICY=DWMNCRP_DISABLED 后，DWM 不再绘制任何
-    非客户区；rounded 再通过 DWMWA_WINDOW_CORNER_PREFERENCE 显式声明圆角，
+    WS_THICKFRAME，Win11 的 DWM 会在窗口四周绘制非客户区（accent 色细边框 +
+    圆角）——即 UI 顶部那条 1px 蓝/白线。
+    - Win11+：优先 DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE（attr 34）——只隐藏
+      系统边框描边，DWM 非客户区渲染管线仍在运行 → 最小化/还原/最大化的
+      系统过渡动画完整保留（此前整条禁用 NCRENDERING 会连动画一起削弱）。
+    - Win10（attr 34 返回非 0 HRESULT）：回退 DWMNCRP_DISABLED 关闭整条
+      非客户区渲染（根治细边）。
+    rounded 再通过 DWMWA_WINDOW_CORNER_PREFERENCE 显式声明圆角，
     让悬浮卡片风格与自绘栏一致（全屏态传 rounded=False 还原直角）。
     """
     try:
         dwm = ctypes.windll.dwmapi
 
-        def _set(attr: int, val: int) -> None:
-            v = ctypes.c_int(val)
-            dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)), attr,
-                                      ctypes.byref(v), ctypes.sizeof(v))
+        def _set(attr: int, val: int, typ=ctypes.c_int) -> int:
+            v = typ(val)
+            return int(dwm.DwmSetWindowAttribute(ctypes.c_void_p(int(hwnd)), attr,
+                                                 ctypes.byref(v), ctypes.sizeof(v)))
 
-        _set(2, 1)   # DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED
+        if _set(34, 0xFFFFFFFE, ctypes.c_uint) != 0:   # DWMWA_BORDER_COLOR=NONE
+            _set(2, 1)   # Win10 回退：DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED
         _set(33, 2 if rounded else 0)  # DWMWA_WINDOW_CORNER_PREFERENCE: ROUND(2)/DEFAULT(0)
     except Exception:  # noqa: BLE001 dwmapi 缺失或旧版系统不支持时静默降级
         pass
@@ -781,6 +786,15 @@ def _show_reader_window() -> None:
     user32.ShowWindow(hwnd, 5)  # SW_SHOW
     user32.SetForegroundWindow(hwnd)
     _reader_visible[0] = True
+    # SW_HIDE→SW_SHOW 无系统过渡动画（窗口弹出是瞬时的）→ 前端补一段
+    # 220ms 渐显（win-reveal），阅读窗呼出更柔和。evaluate_js 内部会
+    # marshaling 到 GUI 线程，worker 线程调用安全；失败不影响打开。
+    try:
+        if _win_reader:
+            _win_reader[0].evaluate_js(
+                "window.__readerReveal && window.__readerReveal()")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def open_reader(album: str, title: str = "", chapter: str = "") -> dict:
@@ -1027,7 +1041,7 @@ def main(server: gui_server.GuiServer, dev: bool = False) -> None:
         easy_drag=False,
         text_select=True,
         js_api=Api(server),
-        background_color="#f7f4ee",
+        background_color="#f6f1e9",   # 与 --bg-app 同色：启动/调整期无色差闪变
         confirm_close=False,
         hidden=True,
     )
