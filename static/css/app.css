@@ -20,7 +20,7 @@
   --bg-card: #fffdf9;
   --bg-hover: #f2ecdf;
   --bg-input: #faf7f0;
-  --bg-cream: rgba(255, 252, 246, 0.86);
+  --bg-cream: rgba(255, 252, 246, 0.97);
 
   --text-strong: #2b2620;
   --text-body: #55493c;
@@ -69,6 +69,18 @@ html, body {
 
 input, textarea { user-select: text; -webkit-user-select: text; }
 
+/* 可选中复制：日志 / 详情描述 / 弹窗与横幅正文（排错、引用报错信息需要）。
+   刻意不含任务卡标题行——那里的选中会在 mouseup 触发整行「展开日志」点击 */
+.dlv-task-log,
+.pv-hero-desc,
+.pv-fact-val,
+.jm-modal-text,
+.pv-banner-text,
+.pv-inline-empty-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 button {
   cursor: pointer;
   font-family: inherit;
@@ -113,8 +125,9 @@ img { -webkit-user-drag: none; }
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  min-width: 1020px;
+  /* 高度/最小宽度除以 --ui-zoom（JS 在 body 上设 zoom 时会放大视口单位，须补偿） */
+  height: calc(100vh / var(--ui-zoom, 1));
+  min-width: calc(1020px / var(--ui-zoom, 1));
   /* 留白给顶栏/侧栏悬浮卡片（content 同底色，四周衬底不显“圈”） */
   padding: 10px 12px 12px;
   gap: 10px;
@@ -167,7 +180,7 @@ body.win-reveal .app { animation: winReveal 220ms var(--ease-out); }
   border: 1px solid rgba(255, 255, 255, 0.65);
   border-radius: var(--radius-md);
   box-shadow: 0 1px 2px rgba(80, 60, 40, 0.04), 0 4px 14px rgba(80, 60, 40, 0.06);
-  backdrop-filter: blur(10px);
+  backdrop-filter: none;
   -webkit-app-region: no-drag;
   -webkit-user-select: none;
 }
@@ -235,6 +248,8 @@ body.is-reader-win .rd-title { display: inline-flex; }
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .net-badge[data-state="ok"] { color: #9a6a00; background: var(--orange-soft); }
+/* site = 本地服务正常但目标站点请求失败（与「本地服务未连接」区分开） */
+.net-badge[data-state="site"] { color: #8a6a12; background: rgba(211, 150, 56, 0.16); }
 .net-badge[data-state="down"] { color: #b3402a; background: rgba(211, 76, 56, 0.1); }
 body.is-reader-win .net-badge { display: none; }
 
@@ -354,7 +369,7 @@ body.is-reader-win .sidebar { display: none; }
   overflow-y: auto;
 }
 
-.view { display: none; max-width: 980px; margin: 0 auto; }
+.view { display: none; max-width: 1100px; margin: 0 auto; }
 .view.is-active {
   display: block;
   animation: viewIn var(--dur-mid) var(--ease-out);
@@ -636,6 +651,11 @@ body.is-reader-win .sidebar { display: none; }
 .jm-modal-text { font-size: 12px; line-height: 1.6; color: var(--text-muted); margin: 0 0 18px; }
 .jm-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .jm-modal-actions .btn { height: 30px; padding: 0 16px; font-size: 12px; }
+/* 信息型弹窗（jmAlert：快捷键说明等）：更宽 + 多行正文 */
+.jm-modal-wide { width: 420px; }
+.jm-modal-lines { margin-bottom: 16px; }
+.jm-modal-lines p { margin: 0 0 5px; line-height: 1.6; }
+.jm-modal-lines p:last-child { margin-bottom: 0; }
 
 /* ==========================================================================
    在线预览（搜索 → 结果 → 详情 → 阅读器）
@@ -828,7 +848,7 @@ body.is-reader-win .sidebar { display: none; }
 /* ---- 结果网格 ---- */
 .pv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
   gap: 16px;
 }
 .pv-card {
@@ -848,6 +868,14 @@ body.is-reader-win .sidebar { display: none; }
   border-color: rgba(255, 149, 0, 0.22);
 }
 .pv-card:active { transform: translateY(-1px) scale(0.985); }
+/* 结果卡入场 stagger：JS 按「本次新增序号」写入 --st（0~11），每级延迟 35ms；
+   backwards 让 delay 期间不可见。no-anim 供「加载更多」时已存在的旧卡跳过，
+   避免整页重播动画（此前 JS 已写入这两个值，但 CSS 无对应规则 → 动画完全失效） */
+.pv-card {
+  animation: cardIn var(--dur-mid) var(--ease-out) backwards;
+  animation-delay: calc(var(--st, 0) * 35ms);
+}
+.pv-card.no-anim { animation: none; }
 .pv-cover {
   position: relative;
   aspect-ratio: 3 / 4;
@@ -1018,6 +1046,16 @@ body.is-reader-win .sidebar { display: none; }
 }
 .pv-chapter:hover .pv-chapter-go { color: var(--text-orange); border-color: var(--orange); background: rgba(255, 149, 0, 0.06); }
 
+/* 章节列表折叠区（>24 话时默认折叠，展开/收起 + 正序/倒序切换，P2-9） */
+.pv-chapter-fold { display: flex; justify-content: center; padding: 12px 0 2px; }
+/* 标签「+N」展开胶囊 */
+.pv-badge.pv-badge-more {
+  cursor: pointer;
+  border: 1px dashed rgba(255, 149, 0, 0.4);
+  background: transparent;
+}
+.pv-badge.pv-badge-more:hover { background: var(--orange-soft); }
+
 /* ==========================================================================
    阅读器（深色沉浸画布；图片极大居中，可点击放大）
    ========================================================================== */
@@ -1056,7 +1094,7 @@ body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.5
   padding: 10px 16px;
   background: var(--bg-cream);
   border-bottom: 1px solid var(--line-soft);
-  backdrop-filter: blur(10px);
+  backdrop-filter: none;
 }
 .pv-reader-titlebox { flex: 1 1 auto; min-width: 0; }
 .pv-reader-album {
@@ -1268,7 +1306,8 @@ body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.5
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 18px;
+  flex-wrap: wrap;
+  gap: 6px 18px;           /* 行距 6px，列距 18px（窄窗口换行时不至于太挤） */
   padding: 7px 0 9px;
   background: #241e18;
   color: #cbbfa8;
@@ -1279,6 +1318,22 @@ body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.5
   color: rgba(203, 191, 168, 0.62);
   letter-spacing: 0.01em;
 }
+
+/* 页码跳转内联输入框（点击底栏「第 x / N 页」按钮，P2-7） */
+.pv-jump-input {
+  width: 64px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  color: #e6dcc6;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 149, 0, 0.5);
+  border-radius: 999px;
+  padding: 5px 6px;
+  outline: none;
+}
+.pv-jump-input:focus { box-shadow: 0 0 0 3px rgba(255, 149, 0, 0.2); }
 
 /* 底栏缩放控件（− / 百分比 / ＋ / 适应宽度 / 1:1） */
 .pv-zoombar {
@@ -1450,6 +1505,12 @@ body.is-fullscreen .pv-reader-foot button.pv-zoom-btn[data-fsbtn] {
 .dlv-row { display: flex; flex-direction: column; gap: 6px; }
 .dlv-row-mode { flex-direction: row; align-items: center; gap: 14px; }
 .dlv-label { font-size: 12px; color: var(--text-muted); }
+/* 标签 + 粘贴按钮同一行（P1-5） */
+.dlv-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+/* 输入实时解析反馈：已识别 N 个 ID / 无效项提醒 */
+.dlv-parse { font-size: 11px; color: var(--text-muted); animation: viewIn var(--dur-fast) var(--ease-out); }
+.dlv-parse[hidden] { display: none; }
+.dlv-parse .is-bad { color: #a43a24; }
 .dlv-input {
   width: 100%;
   background: var(--bg-input);
@@ -1515,11 +1576,33 @@ body.is-fullscreen .pv-reader-foot button.pv-zoom-btn[data-fsbtn] {
 .dlv-list-head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
+  flex-wrap: wrap;
   padding: 12px 18px;
   border-bottom: 1px solid var(--line-soft);
 }
 .dlv-list-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+
+/* 任务状态过滤芯片（P1-4） */
+.dlv-filters { display: inline-flex; gap: 4px; flex: 0 0 auto; }
+.dlv-chip {
+  border: 1px solid var(--line-mid);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.dlv-chip:hover { background: var(--bg-hover); color: var(--text-strong); }
+.dlv-chip.is-active {
+  background: var(--orange-soft);
+  color: var(--text-orange);
+  border-color: rgba(255, 149, 0, 0.4);
+  font-weight: 500;
+}
 .dlv-list-meta { flex: 1 1 auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dlv-tasks { list-style: none; margin: 0; padding: 0; }
 .dlv-task { border-bottom: 1px solid var(--line-soft); transition: background var(--dur-fast) var(--ease-out); }
@@ -1668,3 +1751,91 @@ body.is-fullscreen .pv-reader-foot button.pv-zoom-btn[data-fsbtn] {
   border: 2.5px solid transparent;
   background-clip: content-box;
 }
+
+/* ==========================================================================
+   深色主题（P3）：仅覆盖设计令牌，组件规则不变；
+   少数硬编码浅色细节（徽章 / 横幅 / 骨架屏 / 输入聚焦底）单独覆盖
+   ========================================================================== */
+:root[data-theme="dark"] {
+  --orange: #ffa026;
+  --orange-dark: #f08c00;
+  --orange-soft: rgba(255, 149, 0, 0.16);
+  --orange-soft-2: rgba(255, 149, 0, 0.28);
+
+  --bg-app: #1a1510;
+  --bg-sidebar: #221c15;
+  --bg-card: #27201a;
+  --bg-hover: #322a20;
+  --bg-input: #211b15;
+  --bg-cream: rgba(33, 27, 21, 0.97);
+
+  --text-strong: #f2e9da;
+  --text-body: #d5c7b2;
+  --text-muted: #96866f;
+  --text-orange: #ffb454;
+
+  --line-soft: rgba(255, 233, 200, 0.09);
+  --line-mid: rgba(255, 233, 200, 0.16);
+  --line-orange: rgba(255, 168, 60, 0.38);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.32);
+  --shadow-float: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.35), 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 233, 200, 0.18);
+  border: 2.5px solid transparent;
+  background-clip: content-box;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 233, 200, 0.3);
+  border: 2.5px solid transparent;
+  background-clip: content-box;
+}
+:root[data-theme="dark"] .titlebar { border-color: rgba(255, 255, 255, 0.07); }
+:root[data-theme="dark"] .search-input:focus,
+:root[data-theme="dark"] .dlv-input:focus { background: #171310; }
+:root[data-theme="dark"] .btn-primary:disabled { background: #5c4a2e; color: #cbbfa8; }
+:root[data-theme="dark"] .pv-skeleton::after {
+  background: linear-gradient(100deg, #2b2319 40%, #362c20 50%, #2b2319 60%);
+  background-size: 200% 100%;
+}
+:root[data-theme="dark"] .pv-banner {
+  background: rgba(164, 58, 36, 0.16);
+  color: #f0a58f;
+  border-color: rgba(211, 76, 56, 0.32);
+}
+:root[data-theme="dark"] .dlv-badge.is-running { background: rgba(255, 149, 0, 0.14); color: #ffb454; }
+:root[data-theme="dark"] .dlv-badge.is-done    { background: rgba(49, 178, 138, 0.14); color: #58d3a4; }
+:root[data-theme="dark"] .dlv-badge.is-failed  { background: rgba(211, 76, 56, 0.16); color: #f08f75; }
+:root[data-theme="dark"] .dlv-badge.is-cancelled { background: rgba(255, 233, 200, 0.08); color: #b3a58c; }
+:root[data-theme="dark"] .dlv-badge.is-queued  { background: rgba(214, 178, 94, 0.12); color: #d3b264; }
+:root[data-theme="dark"] .jm-modal { border-color: rgba(255, 255, 255, 0.1); }
+/* 阅读窗顶栏返回键的半透明白底，在深色下换为低透明度白 */
+:root[data-theme="dark"] body.is-reader-win .pv-reader-top .pv-back { background: rgba(255, 255, 255, 0.1); }
+
+/* 界面缩放（P3）：JS 在 body 上设 zoom；.app 的视口高度/最小宽度除以 --ui-zoom 补偿，
+   避免缩放后内容溢出可视区（zoom 会把 100vh 也放大） */
+
+/* 手动关闭动效（P3 设置项；系统级 prefers-reduced-motion 规则仍独立生效） */
+body.no-motion *, body.no-motion *::before, body.no-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* 设置页下拉（外观主题 / 界面缩放 / 动效） */
+.setting-select {
+  background: var(--bg-input);
+  border: 1px solid var(--line-mid);
+  border-radius: 8px;
+  color: var(--text-body);
+  font-size: 12px;
+  padding: 5px 10px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.setting-select:focus { border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-soft); }

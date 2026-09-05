@@ -8,6 +8,34 @@
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+  /* ---------------- 外观偏好（localStorage：主题 / 界面缩放 / 动效） ----------------
+     尽早 apply：脚本在 body 尾部执行，此时尚未首帧绘制，可避免主题闪烁。 */
+  const UI_PREF_KEY = "jm.uiPrefs";
+  const UIPrefs = {
+    load() {
+      try { return JSON.parse(localStorage.getItem(UI_PREF_KEY)) || {}; }
+      catch (err) { return {}; }
+    },
+    save(p) { try { localStorage.setItem(UI_PREF_KEY, JSON.stringify(p)); } catch (err) { /* 隐私模式静默 */ } },
+    apply() {
+      const p = this.load();
+      document.documentElement.dataset.theme = p.theme === "dark" ? "dark" : "light";
+      const z = Number(p.zoom) || 1;
+      document.body.style.zoom = z > 1 ? String(z) : "";
+      // .app 的高度/最小宽度按 1/zoom 补偿（CSS calc 消费），避免缩放后溢出视口
+      document.documentElement.style.setProperty("--ui-zoom", String(z > 0 ? z : 1));
+      document.body.classList.toggle("no-motion", p.motion === "off");
+      return p;
+    },
+    set(patch) {
+      const p = Object.assign(this.load(), patch);
+      this.save(p);
+      this.apply();
+      return p;
+    },
+  };
+  UIPrefs.apply();
+
   /* ---------------- 视图切换（侧栏导航） ---------------- */
 
   const navItems = $$("#side-nav .nav-item");
@@ -47,7 +75,10 @@
     }, ms || 2800);
   };
 
-  /* 自绘确认框（替代浏览器原生 confirm）：返回 Promise<boolean> */
+  /* 自绘确认框（替代浏览器原生 confirm）：返回 Promise<boolean>
+     - role=dialog + aria-modal；Esc 关闭（阻止冒泡，避免连带触发全屏/阅读器的 Esc 逻辑）
+     - Tab 焦点圈定在两个按钮间循环，不逃逸到背后页面
+     - danger 场景默认聚焦「取消」，防止回车误确认 */
   window.jmConfirm = function (title, text, opts) {
     opts = opts || {};
     return new Promise((resolve) => {
@@ -55,6 +86,9 @@
       mask.className = "jm-modal-mask";
       const box = document.createElement("div");
       box.className = "jm-modal";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      box.setAttribute("aria-label", title);
       const t = document.createElement("p");
       t.className = "jm-modal-title";
       t.textContent = title;
@@ -72,16 +106,86 @@
       okBtn.className = "btn " + (opts.danger ? "btn-danger" : "btn-primary");
       okBtn.textContent = opts.okText || "确定";
       const close = (val) => {
+        mask.removeEventListener("keydown", onKey);
         mask.classList.remove("show");
         setTimeout(() => mask.remove(), 180);
         resolve(val);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          close(false);
+          return;
+        }
+        if (e.key !== "Tab") return;
+        // 焦点圈定：在两个按钮之间循环
+        const focusables = [cancelBtn, okBtn];
+        const i = focusables.indexOf(document.activeElement);
+        e.preventDefault();
+        const next = i < 0 ? 0 : (i + (e.shiftKey ? focusables.length - 1 : 1)) % focusables.length;
+        focusables[next].focus();
       };
       cancelBtn.addEventListener("click", () => close(false));
       okBtn.addEventListener("click", () => close(true));
       mask.addEventListener("click", (e) => {
         if (e.target === mask) close(false);
       });
+      mask.addEventListener("keydown", onKey);
       actions.append(cancelBtn, okBtn);
+      box.append(t, d, actions);
+      mask.appendChild(box);
+      document.body.appendChild(mask);
+      requestAnimationFrame(() => mask.classList.add("show"));
+      // 危险操作默认聚焦「取消」：回车不再等于确认
+      (opts.danger ? cancelBtn : okBtn).focus();
+    });
+  };
+
+  /* 信息弹窗（单按钮）：快捷键说明等只读提示。lines 支持字符串数组逐行展示。 */
+  window.jmAlert = function (title, lines, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "jm-modal-mask";
+      const box = document.createElement("div");
+      box.className = "jm-modal jm-modal-wide";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      box.setAttribute("aria-label", title);
+      const t = document.createElement("p");
+      t.className = "jm-modal-title";
+      t.textContent = title;
+      const d = document.createElement("div");
+      d.className = "jm-modal-text jm-modal-lines";
+      (Array.isArray(lines) ? lines : [String(lines || "")]).forEach((line) => {
+        const p = document.createElement("p");
+        p.textContent = line;
+        d.appendChild(p);
+      });
+      const actions = document.createElement("div");
+      actions.className = "jm-modal-actions";
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.className = "btn btn-primary";
+      okBtn.textContent = opts.okText || "知道了";
+      const close = () => {
+        mask.removeEventListener("keydown", onKey);
+        mask.classList.remove("show");
+        setTimeout(() => mask.remove(), 180);
+        resolve();
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape" || e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          close();
+        }
+      };
+      okBtn.addEventListener("click", close);
+      mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
+      mask.addEventListener("keydown", onKey);
+      actions.appendChild(okBtn);
       box.append(t, d, actions);
       mask.appendChild(box);
       document.body.appendChild(mask);
@@ -114,14 +218,19 @@
         .then((r) => r.json().catch(() => null))
         .catch(() => null);
     // 冷启动头几秒窗口控制器可能还没注册（后端返回 window not ready /
-    // reader window not ready），此时不能静默吞掉——短延迟后补发一次，按钮点了必定生效。
+    // reader window not ready），此时不能静默吞掉——带递增间隔补发重试（最多3次，
+    // 覆盖 WebView2 冷启动窗口晚建），按钮点了必定生效。
     const READY_ERRS = ["window not ready", "reader window not ready"];
-    return call().then((data) => {
-      if (data && data.ok === false && READY_ERRS.includes(data.error)) {
-        return new Promise((resolve) => setTimeout(() => resolve(call()), 400));
-      }
-      return data;
-    });
+    let tries = 0;
+    const attempt = () =>
+      call().then((data) => {
+        if (data && data.ok === false && READY_ERRS.includes(data.error) && tries < 3) {
+          tries += 1;
+          return new Promise((resolve) => setTimeout(() => resolve(attempt()), 300 * tries));
+        }
+        return data;
+      });
+    return attempt();
   }
   $("#win-min").addEventListener("click", () => windowAction("minimize"));
 
@@ -260,26 +369,63 @@
 
   const badge = $("#net-badge");
   let lastHealth = null;
+  /* 站点可达性由预览请求的成败驱动（/api/preview/status 不触发网络请求，无法探测站点，
+     故不做后台探测轮询）：最近一次预览请求失败 → site 态；任一预览请求成功 → 恢复 ok */
+  let siteDown = false;
+
+  function setSiteReachable(ok) {
+    const next = !ok;
+    if (siteDown === next) return;
+    siteDown = next;
+    paintNetBadge();
+  }
+
+  function paintNetBadge() {
+    if (!lastHealth) {
+      badge.dataset.state = "down";
+      badge.textContent = "本地服务未连接";
+      badge.title = "";
+      return;
+    }
+    if (siteDown) {
+      badge.dataset.state = "site";
+      badge.textContent = "站点暂不可达";
+      badge.title = "本地服务正常，但最近一次预览请求失败（站点波动或代理异常）";
+      return;
+    }
+    badge.dataset.state = "ok";
+    badge.textContent = "本地服务已就绪";
+  }
+
+  /* 徽章 tooltip 补充当前生效的客户端实现与代理（status 为纯本地读，不触发网络） */
+  async function refreshStatusTip() {
+    try {
+      const res = await fetch("/api/preview/status", { cache: "no-store" });
+      const d = await res.json().catch(() => null);
+      if (!d || d.ok === false || siteDown) return;
+      const implLabel = d.impl === "html" ? "网页端" : "移动端 API";
+      badge.title = "客户端：" + implLabel + " · 代理：" + (d.proxy || "跟随系统");
+    } catch (err) { /* 静默：tooltip 缺失不影响功能 */ }
+  }
 
   async function health() {
     try {
       const res = await fetch("/api/health", { cache: "no-store" });
       if (!res.ok) throw new Error("bad status");
       const data = await res.json();
-      badge.dataset.state = "ok";
-      badge.textContent = "本地服务已就绪";
+      lastHealth = data;
+      paintNetBadge();
+      refreshStatusTip();
       const ver = $("#about-version");
       if (ver && data.app) ver.textContent = data.app;
       const outPath = $("#output-path");
       if (outPath && data.outputDir) outPath.textContent = data.outputDir;
       const foot = $("#foot-version");
       if (foot) foot.textContent = data.app;
-      lastHealth = data;
       return data;
     } catch (err) {
-      badge.dataset.state = "down";
-      badge.textContent = "本地服务未连接";
       lastHealth = null;
+      paintNetBadge();
       return null;
     }
   }
@@ -312,6 +458,21 @@
     if (!data) return;
     openPath(data.outputDir);
   });
+
+  /* ---------------- 设置页：外观主题 / 界面缩放 / 动效（localStorage，即时生效） ---------------- */
+  (function bindAppearanceSettings() {
+    const themeSel = $("#set-theme");
+    const zoomSel = $("#set-zoom");
+    const motionSel = $("#set-motion");
+    if (!themeSel || !zoomSel || !motionSel) return;
+    const p = UIPrefs.load();
+    themeSel.value = p.theme === "dark" ? "dark" : "light";
+    zoomSel.value = String(Number(p.zoom) || 1);
+    motionSel.value = p.motion === "off" ? "off" : "on";
+    themeSel.addEventListener("change", () => UIPrefs.set({ theme: themeSel.value }));
+    zoomSel.addEventListener("change", () => UIPrefs.set({ zoom: Number(zoomSel.value) || 1 }));
+    motionSel.addEventListener("change", () => UIPrefs.set({ motion: motionSel.value }));
+  })();
 
   /* ========================================================================
      在线预览（只读，不落盘）
@@ -466,6 +627,7 @@
 
     try {
       const data = await apiGet("/api/search?q=" + encodeURIComponent(queryText) + "&page=" + page);
+      setSiteReachable(true);
       const items = data.items || [];
       PV.state.search = { query: queryText, page, total: data.total || 0, loading: false, ended: false };
       if (append) {
@@ -482,6 +644,7 @@
       }
       renderResults();
     } catch (err) {
+      setSiteReachable(false);
       PV.state.search.loading = false;
       if (!append) {
         PV.grid.innerHTML = "";
@@ -591,10 +754,12 @@
     showPage("detail");
     try {
       const album = await apiGet("/api/album?id=" + encodeURIComponent(id));
+      setSiteReachable(true);
       PV.state.album = album;
       PV.state.chapters = album.chapters || [];
       renderAlbum(album);
     } catch (err) {
+      setSiteReachable(false);
       PV.detail.innerHTML = "";
       const empty = el("div", "pv-inline-empty");
       empty.appendChild(el("p", "pv-inline-empty-title", "详情加载失败"));
@@ -636,7 +801,7 @@
     const info = el("div", "pv-hero-info");
     info.appendChild(el("h2", "pv-hero-title", album.title || ("JM" + album.id)));
     const badges = el("div", "pv-badges");
-    album.tags && album.tags.slice(0, 12).forEach((tag) => badges.appendChild(el("span", "pv-badge", tag)));
+    renderBadges(badges, album);
     if (badges.childElementCount) info.appendChild(badges);
 
     const facts = el("dl", "pv-facts");
@@ -655,17 +820,80 @@
     hero.appendChild(info);
     PV.detail.appendChild(hero);
 
-    // 章节目录
-    const chapterHead = el("div", "pv-chapter-head");
-    chapterHead.appendChild(el("h3", "pv-chapter-title", "章节列表"));
-    chapterHead.appendChild(el("span", "pv-chapter-count", album.chapterCount + " 话 · 点击在新窗口阅读"));
-    PV.detail.appendChild(chapterHead);
+    // 章节目录（>24 话折叠，支持正序/倒序）
+    PV.detail.appendChild(renderChapterSection(album));
+  }
+
+  const TAG_FOLD_LIMIT = 12;
+  /* 标签超过 12 个时折叠为「＋N」，点击展开全部；展开态按本子记忆（本次会话内） */
+  function renderBadges(host, album) {
+    host.innerHTML = "";
+    const tags = album.tags || [];
+    const expanded = PV.tagsExpanded === String(album.id);
+    (expanded ? tags : tags.slice(0, TAG_FOLD_LIMIT)).forEach((tag) =>
+      host.appendChild(el("span", "pv-badge", tag)));
+    if (tags.length > TAG_FOLD_LIMIT) {
+      const more = el("button", "pv-badge pv-badge-more",
+        expanded ? "收起标签" : "＋" + (tags.length - TAG_FOLD_LIMIT) + " 个标签");
+      more.type = "button";
+      more.addEventListener("click", (e) => {
+        e.stopPropagation();
+        PV.tagsExpanded = expanded ? "" : String(album.id);
+        renderBadges(host, album);
+      });
+      host.appendChild(more);
+    }
+  }
+
+  const CHAPTER_FOLD_LIMIT = 24;
+
+  /* 章节列表区：超过 24 话默认折叠 + 正序/倒序切换；展开/倒序态按本子记忆（本次会话内） */
+  function renderChapterSection(album) {
+    const chapters = album.chapters || [];
+    const aid = String(album.id);
+    const expanded = PV.chExpanded === aid;
+    const reversed = PV.chReversed === aid;
+
+    const section = el("div", "pv-chapter-section");
+    const head = el("div", "pv-chapter-head");
+    head.appendChild(el("h3", "pv-chapter-title", "章节列表"));
+    head.appendChild(el("span", "pv-chapter-count", chapters.length + " 话 · 点击在新窗口阅读"));
+    head.appendChild(el("span", "pv-toolbar-spacer"));
+    if (chapters.length > 1) {
+      const sortBtn = el("button", "btn btn-ghost btn-sm", reversed ? "正序" : "倒序");
+      sortBtn.type = "button";
+      sortBtn.title = reversed ? "按章节号从小到大" : "最新话排最前";
+      sortBtn.addEventListener("click", () => {
+        PV.chReversed = reversed ? "" : aid;
+        refreshChapterSection(album);
+      });
+      head.appendChild(sortBtn);
+    }
+    section.appendChild(head);
 
     const list = el("div", "pv-chapter-list");
-    (album.chapters || []).forEach((ch) => {
-      list.appendChild(chapterRow(album, ch));
-    });
-    PV.detail.appendChild(list);
+    const shown = expanded ? chapters : chapters.slice(0, CHAPTER_FOLD_LIMIT);
+    (reversed ? [...shown].reverse() : shown).forEach((ch) => list.appendChild(chapterRow(album, ch)));
+    section.appendChild(list);
+
+    if (chapters.length > CHAPTER_FOLD_LIMIT) {
+      const fold = el("div", "pv-chapter-fold");
+      const btn = el("button", "btn btn-ghost",
+        expanded ? "收起章节列表" : "展开全部 " + chapters.length + " 话");
+      btn.type = "button";
+      btn.addEventListener("click", () => {
+        PV.chExpanded = expanded ? "" : aid;
+        refreshChapterSection(album);
+      });
+      fold.appendChild(btn);
+      section.appendChild(fold);
+    }
+    return section;
+  }
+
+  function refreshChapterSection(album) {
+    const cur = PV.detail.querySelector(".pv-chapter-section");
+    if (cur) cur.replaceWith(renderChapterSection(album));
   }
 
   function chapterRow(album, ch) {
@@ -706,8 +934,10 @@
     PV.state.readerChapterIndex = (album.chapters || []).findIndex((c) => c.id === chapter.id);
     try {
       const photo = await apiGet("/api/photo?id=" + encodeURIComponent(chapter.id));
+      setSiteReachable(true);
       renderReader(photo);
     } catch (err) {
+      setSiteReachable(false);
       readerPage.innerHTML = "";
       const empty = el("div", "pv-inline-empty");
       empty.appendChild(el("p", "pv-inline-empty-title", "章节加载失败"));
@@ -805,12 +1035,22 @@
     const stage = el("div", "pv-reader-stage");
     scroll.appendChild(stage);
     readerPage.appendChild(scroll);
-    // 右键已加载图片 → 自绘放大查看层（左键留给拖动平移，避免误触进浮层）
+    // 双击或右键已加载图片 → 自绘放大查看层（左键留给拖动平移，避免误触进浮层）
+    const zoomableImg = (target) => {
+      const img = target && target.closest ? target.closest(".pv-page-img") : null;
+      if (!img || img.classList.contains("is-loading") || img.dataset.state !== "done") return null;
+      return img;
+    };
     scroll.addEventListener("contextmenu", (e) => {
-      const img = e.target.closest && e.target.closest(".pv-page-img");
-      if (!img || img.classList.contains("is-loading") || img.dataset.state !== "done") return;
+      const img = zoomableImg(e.target);
+      if (!img) return;
       e.preventDefault();
       openZoom(img);
+    });
+    // 双击进放大：比右键更易发现（功能一致，详见底栏提示与「快捷键」说明）
+    scroll.addEventListener("dblclick", (e) => {
+      const img = zoomableImg(e.target);
+      if (img) { e.preventDefault(); openZoom(img); }
     });
     // 放大后左键拖动平移（未放大不拦截，保留原生滚动）
     bindReaderPan(scroll);
@@ -819,13 +1059,33 @@
 
     // 底部信息条
     const foot = el("div", "pv-reader-foot");
-    const countLabel = el("span", "pv-reader-count", "第 1 / " + photo.pageCount + " 页");
+    // 页码做成按钮：点击 → 内联输入页码直接跳转（P2-7）
+    const countLabel = el("button", "pv-zoom-btn pv-reader-count", "第 1 / " + photo.pageCount + " 页");
+    countLabel.type = "button";
+    countLabel.title = "点击跳转到指定页";
+    countLabel.addEventListener("click", () => openPageJump(countLabel));
     foot.appendChild(buildReaderZoombar());   // 缩放：− / 百分比 / ＋ / 适应宽度 / 1:1
-    if (rw) {
-      const tip = el("span", "pv-reader-tip", "滚轮上下滑动 · Ctrl+滚轮局部缩放 · 右键放大 · 放大后可拖动 · 底栏可缩放");
-      foot.appendChild(tip);
-    }
+    const tip = el("span", "pv-reader-tip",
+      rw ? "双击/右键放大 · Ctrl+滚轮缩放 · ←→ 翻章 · 放大后可拖动"
+         : "双击/右键放大 · Ctrl+滚轮缩放 · ←→ 翻章 · Esc 返回");
+    foot.appendChild(tip);
     foot.appendChild(countLabel);
+    // 快捷键说明入口（此前快捷键全靠猜，无可发现入口）
+    const helpBtn = el("button", "pv-zoom-btn", "快捷键");
+    helpBtn.type = "button";
+    helpBtn.title = "查看阅读器快捷键";
+    helpBtn.addEventListener("click", () => {
+      window.jmAlert("阅读器快捷键", [
+        "滚轮：上下翻页",
+        "← / →：上一章 / 下一章",
+        "Ctrl + 滚轮：阅读区缩放（25% ~ 400%）",
+        "双击 / 右键图片：放大查看；放大层内 ← / → 翻页、滚轮/双击缩放、拖拽平移、Esc 关闭",
+        "底栏「第 x / N 页」：点击可输入页码直接跳转",
+        rw ? "Esc：收起章节目录" : "Esc：返回详情页",
+        "F11：全屏 / 退出全屏",
+      ]);
+    });
+    foot.appendChild(helpBtn);
     if (rw) {
       // 阅读窗全屏按钮（独立窗口仍可用 F11，这里给显式入口）
       const fsBtn = el("button", "pv-zoom-btn", "全屏");
@@ -838,25 +1098,105 @@
     }
     readerPage.appendChild(foot);
 
-    PV.reader = { scroll, stage, photo, nextToLoad: 0, total: photo.pageCount, countLabel };
+    // 旧章节的观察器断开，避免泄漏与重复回调
+    if (PV.reader && PV.reader.pageIO) PV.reader.pageIO.disconnect();
+    if (PV.reader && PV.reader.sentinelIO) PV.reader.sentinelIO.disconnect();
+
+    PV.reader = { scroll, stage, photo, nextToLoad: 0, total: photo.pageCount, countLabel, currentPage: 1 };
     PV.state.photo = photo;
     // 沿用上一章节的缩放偏好（换章不重置），换章时不做中心锚点
     applyReaderZoom(PV.readerZoom || 1, false);
+
+    /* 当前页码：窄带 IntersectionObserver（视口 45% 处的横带）替代
+       每次滚动逐图 getBoundingClientRect —— 长章节滚动零布局读取 */
+    PV.reader.pageIO = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (!e.isIntersecting) return;
+        const i = Number(e.target.dataset.page);
+        if (i && PV.reader.countLabel) {
+          PV.reader.currentPage = i;
+          PV.reader.countLabel.textContent = "第 " + i + " / " + PV.reader.total + " 页";
+        }
+      });
+    }, { root: scroll, rootMargin: "-45% 0px -54% 0px", threshold: 0 });
 
     // 惰性批量注入
     appendBatch(6);
     if (PV.reader.total > PV.reader.nextToLoad) {
       PV.reader.sentinel = el("div", "pv-reader-sentinel");
       stage.appendChild(PV.reader.sentinel);
-      const io = new IntersectionObserver((entries) => {
+      PV.reader.sentinelIO = new IntersectionObserver((entries) => {
         if (entries.some((e) => e.isIntersecting)) appendBatch(24);
       }, { root: scroll, rootMargin: "1200px 0px" });
-      io.observe(PV.reader.sentinel);
+      PV.reader.sentinelIO.observe(PV.reader.sentinel);
     }
 
+    // 贴底兜底：末页未越过 45% 页码横带时（短页），滚到底即钉为最后一页
     scroll.addEventListener("scroll", throttleScroll, { passive: true });
-    updateReaderCount();
     updateReaderTitlebar();
+
+    // 预取下一章图片清单（服务端 photo 有 LRU 缓存，翻章近乎瞬时）；错开首屏图片加载
+    clearTimeout(PV.prefetchTimer);
+    PV.prefetchTimer = setTimeout(() => prefetchNextChapter(), 1200);
+  }
+
+  /* 预取下一章：服务端对 photo 清单有 LRU 缓存，提前拉取让翻章秒开；失败静默 */
+  function prefetchNextChapter() {
+    const album = PV.state.readerAlbum;
+    const idx = PV.state.readerChapterIndex;
+    const chs = (album && album.chapters) || [];
+    const next = idx >= 0 ? chs[idx + 1] : null;
+    if (!next) return;
+    if (PV.prefetchedId === next.id) return;
+    PV.prefetchedId = next.id;
+    apiGet("/api/photo?id=" + encodeURIComponent(next.id)).catch(() => {});
+  }
+
+  /* 页码跳转：点击底栏页码 → 内联输入 → Enter 跳转（未注入的页先批量注入） */
+  function openPageJump(label) {
+    const r = PV.reader;
+    if (!r || r.jumping) return;
+    r.jumping = true;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.className = "pv-jump-input";
+    input.value = String(r.currentPage || 1);
+    input.setAttribute("aria-label", "跳转到页码（1 ~ " + r.total + "）");
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+    const done = (commit) => {
+      if (!input.isConnected) return;
+      input.replaceWith(label);
+      r.jumping = false;
+      if (!commit) return;
+      const n = Math.round(Number(input.value));
+      if (!Number.isFinite(n) || n < 1 || n > r.total) {
+        jmToast("页码超出范围（1 ~ " + r.total + "）", 2400, "warn");
+        return;
+      }
+      jumpToPage(n);
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); done(true); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+      // 输入框内的 ←/→ 用于移动光标：阻止冒泡到阅读器的翻章快捷键
+      else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.stopPropagation(); }
+    });
+    input.addEventListener("blur", () => done(true));
+  }
+
+  function jumpToPage(n) {
+    const r = PV.reader;
+    if (!r || !r.stage) return;
+    if (r.nextToLoad < n) appendBatch(n - r.nextToLoad);   // 未注入的页先注入
+    const figs = $$(".pv-page", r.stage);
+    const target = figs[Math.min(n, figs.length) - 1];
+    if (!target) return;
+    r.currentPage = n;
+    if (r.countLabel) r.countLabel.textContent = "第 " + n + " / " + r.total + " 页";
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
   /* ---- 阅读窗：左侧章节抽屉 ---- */
@@ -1007,8 +1347,8 @@
     }, { passive: false });
   }
 
-  /* ---- 图片放大查看（自绘浮层：右键进入、滚轮/双击缩放、拖拽平移、Esc/× 关闭） ---- */
-  const zoomState = { el: null, img: null, scale: 1, tx: 0, ty: 0, drag: null, w: 0, h: 0 };
+  /* ---- 图片放大查看（自绘浮层：双击/右键进入、滚轮/双击缩放、拖拽平移、←→ 翻页、Esc/× 关闭） ---- */
+  const zoomState = { el: null, img: null, scale: 1, tx: 0, ty: 0, drag: null, index: -1, hint: null };
 
   function ensureZoomLayer() {
     if (zoomState.el) return;
@@ -1021,11 +1361,13 @@
     close.type = "button";
     close.setAttribute("aria-label", "关闭放大");
     layer.appendChild(close);
-    layer.appendChild(el("div", "pv-zoom-hint", "滚轮 / 双击 缩放 · 拖拽平移 · Esc 关闭"));
+    const hint = el("div", "pv-zoom-hint", "滚轮 / 双击 缩放 · 拖拽平移 · Esc 关闭");
+    layer.appendChild(hint);
     document.body.appendChild(layer);
     zoomState.el = layer;
     zoomState.stage = stage;
     zoomState.cell = layer.querySelector(".pv-zoom-cell");
+    zoomState.hint = hint;
 
     function apply() {
       if (!zoomState.img) return;
@@ -1077,12 +1419,24 @@
     document.addEventListener("keydown", (e) => {
       if (zoomState.el.hidden) return;
       if (e.key === "Escape") { e.preventDefault(); closeZoom(); }
+      // 放大层内 ← / → 翻页（阅读器自身的翻章快捷键在浮层打开时已让路）
+      else if (e.key === "ArrowLeft") { e.preventDefault(); zoomGo(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); zoomGo(1); }
     });
   }
 
   function openZoom(img) {
     ensureZoomLayer();
     if (zoomState.img) zoomState.img.remove();
+    // 记录当前页序号：供浮层内 ←→ 翻页定位
+    zoomState.index = -1;
+    const r = PV.reader;
+    if (r && r.stage) {
+      const figs = $$(".pv-page", r.stage);
+      for (let i = 0; i < figs.length; i += 1) {
+        if (figs[i].contains(img)) { zoomState.index = i; break; }
+      }
+    }
     const copy = img.cloneNode(false); // 复用已加载的高清原图，无闪烁
     // 去掉阅读区缩放态：否则 .pv-page-img.is-zoomed 的优先级会盖过浮层尺寸规则
     copy.classList.remove("is-zoomed");
@@ -1093,6 +1447,7 @@
     zoomState.img = copy;
     zoomState.el.hidden = false;
     zoomState.scale = 1; zoomState.tx = 0; zoomState.ty = 0;
+    updateZoomHint();
     const layer = zoomState.el;
     // 进入即适度放大（针对「极大居中 + 放大查看」的需求）
     zoomState.scale = 1.6;
@@ -1109,6 +1464,38 @@
     layer.querySelector(".pv-zoom-stage").scrollTop = 0;
   }
 
+  /* 放大层内翻页：目标页在阅读区已加载则复用位图，否则直接取图片清单 URL；
+     换页回到适配屏幕（缩放/平移状态不跨页残留） */
+  function zoomGo(delta) {
+    if (!zoomState.el || zoomState.el.hidden) return;
+    const r = PV.reader;
+    if (!r || !r.photo || !r.photo.images) return;
+    const next = zoomState.index + delta;
+    if (zoomState.index < 0 || next < 0 || next >= r.total) return;
+    zoomState.index = next;
+    const figs = $$(".pv-page", r.stage);
+    const loaded = figs[next] ? figs[next].querySelector(".pv-page-img[data-state='done']") : null;
+    const src = loaded ? loaded.src : r.photo.images[next].url;
+    if (zoomState.img) zoomState.img.remove();
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "第 " + (next + 1) + " 页";
+    zoomState.cell.appendChild(img);
+    zoomState.img = img;
+    zoomState.scale = 1; zoomState.tx = 0; zoomState.ty = 0;
+    updateZoomHint();
+  }
+
+  function updateZoomHint() {
+    if (!zoomState.hint) return;
+    const r = PV.reader;
+    const total = (r && r.total) || 0;
+    const pageTxt = zoomState.index >= 0 && total
+      ? "第 " + (zoomState.index + 1) + " / " + total + " 页 · "
+      : "";
+    zoomState.hint.textContent = pageTxt + "←→ 翻页 · 滚轮/双击 缩放 · 拖拽平移 · Esc 关闭";
+  }
+
   function closeZoomLayer() {
     ensureZoomLayer();
     if (zoomState.el && !zoomState.el.hidden) {
@@ -1122,8 +1509,8 @@
     if (PV.reader.timer) return;
     PV.reader.timer = setTimeout(() => {
       PV.reader.timer = null;
-      onReaderScroll();
-    }, 120);
+      onReaderScrollBottom();
+    }, 150);
   }
 
   function appendBatch(count) {
@@ -1133,7 +1520,9 @@
     const end = Math.min(start + count, r.total);
     for (let i = start; i < end; i += 1) {
       const page = r.photo.images[i];
+      if (!page) { r.nextToLoad = i + 1; continue; }   // 清单比 total 短时容错跳过
       const wrap = el("figure", "pv-page");
+      wrap.dataset.page = String(i + 1);   // 页码横带 IO 读取
       const img = document.createElement("img");
       // 懒加载的后批图片须继承当前缩放态，否则新页会以 100% 混入放大视图
       img.className = "pv-page-img" + ((PV.readerZoom || 1) > 1.001 ? " is-zoomed" : "");
@@ -1142,6 +1531,7 @@
       img.addEventListener("error", () => onPageError(wrap, i, img));
       wrap.appendChild(img);
       r.stage.insertBefore(wrap, r.sentinel);
+      if (r.pageIO) r.pageIO.observe(wrap);
       requestPageImage(img);
     }
     r.nextToLoad = end;
@@ -1176,32 +1566,15 @@
     wrap.appendChild(retry);
   }
 
-  function onReaderScroll() {
+  /* 贴底时页码直接钉到最后一页（末页可能较短、未越过 45% 页码横带） */
+  function onReaderScrollBottom() {
     const r = PV.reader;
-    if (!r || !r.stage) return;
-    updateReaderCount();
-    // 快到底部时提前注入
-    if (r.sentinel && r.nextToLoad < r.total) {
-      const rect = r.sentinel.getBoundingClientRect();
-      const host = r.scroll.getBoundingClientRect();
-      if (rect.top - host.bottom < 2000) appendBatch(24);
+    if (!r || !r.scroll || !r.countLabel) return;
+    const sc = r.scroll;
+    if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 8) {
+      r.currentPage = r.total;
+      r.countLabel.textContent = "第 " + r.total + " / " + r.total + " 页";
     }
-  }
-
-  function updateReaderCount() {
-    const r = PV.reader;
-    if (!r || !r.countLabel || !r.scroll) return;
-    const host = r.scroll;
-    const scrollTop = host.scrollTop;
-    const imgs = $$(".pv-page-img", host);
-    let current = 1;
-    const probe = scrollTop + host.clientHeight * 0.45;
-    imgs.forEach((img, i) => {
-      const rect = img.getBoundingClientRect();
-      const top = rect.top + host.scrollTop - host.getBoundingClientRect().top;
-      if (top <= probe) current = i + 1;
-    });
-    r.countLabel.textContent = "第 " + Math.min(current, r.total) + " / " + r.total + " 页";
   }
 
   /* ---- 独立阅读窗：主窗入口 + 阅读窗自举 ---- */
@@ -1279,6 +1652,7 @@
       showPage("reader");
       try {
         const album = await apiGet("/api/album?id=" + encodeURIComponent(aid));
+        setSiteReachable(true);
         PV.state.album = album;
         PV.state.chapters = album.chapters || [];
         const chapters = album.chapters || [];
@@ -1294,6 +1668,7 @@
         const ch = chapters[Math.max(0, Math.min(chIdx, chapters.length - 1))];
         await openReader(album, ch);
       } catch (err) {
+        setSiteReachable(false);
         page.innerHTML = "";
         const empty = el("div", "pv-inline-empty");
         empty.appendChild(el("p", "pv-inline-empty-title", "本子加载失败"));
@@ -1398,6 +1773,17 @@
       if (s && !s.loading) doSearch(s.query, s.page + 1, true);
     });
 
+    // 无限滚动（P2-12）：哨兵进入视口（含 500px 预取边距）自动加载下一页；
+    // 「加载更多」按钮仍保留作兜底。结果页隐藏时哨兵不相交，不会误触发。
+    const resultsIO = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return;
+      const s = PV.state.search;
+      if (!s || s.loading || s.ended || !s.items || !s.items.length) return;
+      doSearch(s.query, s.page + 1, true);
+    }, { root: $(".content"), rootMargin: "500px 0px" });
+    const pvSentinel = $("#pv-sentinel");
+    if (pvSentinel) resultsIO.observe(pvSentinel);
+
     // 首页空态底部：渲染搜索历史（点击回填搜索，右键可删除）
     SearchHistory.render();
 
@@ -1462,7 +1848,13 @@
     meta: $("#dlv-list-meta"),
     tasks: $("#dlv-tasks"),
     refresh: $("#dlv-refresh"),
+    paste: $("#dlv-paste"),
+    parse: $("#dlv-parse"),
+    filters: $("#dlv-filters"),
+    clearDone: $("#dlv-clear-done"),
+    emptyHint: $("#dlv-empty"),
     kind: "album",
+    filter: "all",          // 状态筛选：all | active | done | bad
     timer: null,
     byId: new Map(),        // job_id -> {summary, open, ring[], dom{...}}
     sources: new Map(),     // job_id -> EventSource
@@ -1486,20 +1878,55 @@
   }
 
   /* ---- 解析输入：URL 提取 id / 纯数字 token，去重保序 ---- */
+  function dlTokenToId(tok) {
+    if (/^https?:\/\//i.test(tok)) {
+      const m = tok.match(/[?&]id=(\d+)/);
+      return m ? m[1] : (tok.match(/(\d+)\/?$/) || [])[1] || null;
+    }
+    if (/^\d+$/.test(tok)) return tok;
+    return null;
+  }
+
   function dlParseIds(raw) {
     const out = [];
     const tokens = String(raw || "").split(/[\s,，、;；]+/).filter(Boolean);
     tokens.forEach((tok) => {
-      let id = null;
-      if (/^https?:\/\//i.test(tok)) {
-        const m = tok.match(/[?&]id=(\d+)/);
-        id = m ? m[1] : (tok.match(/(\d+)\/?$/) || [])[1] || null;
-      } else if (/^\d+$/.test(tok)) {
-        id = tok;
-      }
+      const id = dlTokenToId(tok);
       if (id && out.indexOf(id) === -1) out.push(id);
     });
     return out;
+  }
+
+  /* 输入实时解析反馈（P1-5）：已识别 N 个 ID（去重前后）、无法识别的项数 */
+  function dlRenderParseInfo() {
+    if (!DL.parse) return;
+    const tokens = String(DL.idsEl.value || "").split(/[\s,，、;；]+/).filter(Boolean);
+    if (!tokens.length) { DL.parse.hidden = true; DL.parse.textContent = ""; return; }
+    let ok = 0;
+    let bad = 0;
+    tokens.forEach((tok) => { if (dlTokenToId(tok)) ok += 1; else bad += 1; });
+    const unique = dlParseIds(DL.idsEl.value).length;
+    DL.parse.hidden = false;
+    DL.parse.textContent = "";
+    DL.parse.appendChild(el("span", null, "已识别 " + unique + " 个 ID"));
+    if (ok !== unique) DL.parse.appendChild(el("span", null, "（去重前 " + ok + " 个）"));
+    if (bad) DL.parse.appendChild(el("span", "is-bad", " · " + bad + " 项无法识别，将被忽略"));
+  }
+
+  /* 粘贴剪贴板（P1-5）：追加到输入框末尾 */
+  async function dlPasteClipboard() {
+    let text = "";
+    try { text = await navigator.clipboard.readText(); }
+    catch (err) { text = ""; }
+    if (!text || !text.trim()) {
+      jmToast("无法读取剪贴板，请手动粘贴（Ctrl+V）", 3000, "warn");
+      DL.idsEl.focus();
+      return;
+    }
+    const cur = DL.idsEl.value.trim();
+    DL.idsEl.value = cur ? cur + "\n" + text.trim() : text.trim();
+    dlRenderParseInfo();
+    DL.idsEl.focus();
   }
 
   async function dlSubmit() {
@@ -1584,6 +2011,9 @@
     const actions = el("div", "dlv-task-actions");
     const logBtn = el("button", "dlv-btn-mini", "日志");
     logBtn.type = "button";
+    const copyBtn = el("button", "dlv-btn-mini", "复制");
+    copyBtn.type = "button";
+    copyBtn.title = "复制该任务的日志到剪贴板";
     const openBtn = el("button", "dlv-btn-mini", "打开目录");
     openBtn.type = "button";
     const cancelBtn = el("button", "dlv-btn-mini is-danger", "取消");
@@ -1592,7 +2022,7 @@
     retryBtn.type = "button";
     const clearBtn = el("button", "dlv-btn-mini", "清除");
     clearBtn.type = "button";
-    actions.append(logBtn, openBtn, cancelBtn, retryBtn, clearBtn);
+    actions.append(logBtn, copyBtn, openBtn, cancelBtn, retryBtn, clearBtn);
 
     row.append(main, actions);
     const logEl = el("div", "dlv-task-log");
@@ -1600,6 +2030,10 @@
     li.append(row, logEl);
 
     row.addEventListener("click", () => dlToggleLog(st.summary.job_id));
+    copyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dlCopyLog(st.summary.job_id);
+    });
     openBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       dlOpenOutputDir(st.summary);
@@ -1616,7 +2050,7 @@
       e.stopPropagation();
       dlClear(st.summary.job_id);
     });
-    st.dom = { li, badge, stateEl, idsEl, sub, prog, progBar, progText, logBtn, openBtn, cancelBtn, retryBtn, clearBtn, logEl };
+    st.dom = { li, badge, stateEl, idsEl, sub, prog, progBar, progText, logBtn, copyBtn, openBtn, cancelBtn, retryBtn, clearBtn, logEl };
     return li;
   }
 
@@ -1636,7 +2070,9 @@
     dlPaintState(s.job_id);
   }
 
-  /* ---- 进度条：下载为 0~90 整体段，PDF 合并为 90~100；终态归位 ---- */
+  /* ---- 进度条：下载为 0~90 整体段，PDF 合并为 90~100；终态归位 ----
+     修复：进度必须走 transform: scaleX（CSS 初始 scaleX(0)、过渡挂在 transform 上）。
+     旧实现运行中只改 width，scaleX(0) 把条压成零宽 → 下载全程进度条不可见。 */
   function dlPaintProgress(st, p) {
     if (!st || !st.dom) return;
     const state = st.summary.state;
@@ -1652,7 +2088,7 @@
     }
     const overall = Math.max(0, Math.min(100, Number(p.overall) || 0));
     st.dom.prog.hidden = false;
-    st.dom.progBar.style.width = overall + "%";
+    st.dom.progBar.style.transform = "scaleX(" + overall / 100 + ")";
     const phase = p.phase === "pdf" ? "PDF 合并" : "下载图片";
     let txt = phase + " " + Math.round(overall) + "%";
     if (p.done != null && p.total != null) txt += "（" + p.done + "/" + p.total + "）";
@@ -1673,6 +2109,49 @@
     st.dom.cancelBtn.hidden = !active;
     st.dom.retryBtn.hidden = !(state === "failed" || state === "cancelled");
     st.dom.clearBtn.hidden = !terminal;
+    dlApplyFilter();   // 状态变化可能改变筛选分组归属
+  }
+
+  /* ---- 状态筛选（P1-4）：chips 切换 DL.filter，卡片按状态显隐 ---- */
+  function dlFilterMatch(state) {
+    if (DL.filter === "active") return state === "queued" || state === "running";
+    if (DL.filter === "done") return state === "done";
+    if (DL.filter === "bad") return state === "failed" || state === "cancelled";
+    return true;
+  }
+
+  function dlApplyFilter() {
+    let visible = 0;
+    DL.byId.forEach((st) => {
+      if (!st.dom) return;
+      const show = dlFilterMatch(st.summary.state);
+      st.dom.li.hidden = !show;
+      if (show) visible += 1;
+    });
+    if (DL.emptyHint) {
+      DL.emptyHint.hidden = DL.byId.size === 0 || visible > 0;
+      if (DL.byId.size > 0 && visible === 0) DL.emptyHint.textContent = "当前筛选下没有任务";
+    }
+  }
+
+  /* 批量清除已结束任务（P1-4）：历史记录仍保留在「下载历史」 */
+  async function dlClearFinished() {
+    const targets = [...DL.byId.values()].filter((st) =>
+      st.summary.state === "done" || st.summary.state === "failed" || st.summary.state === "cancelled");
+    if (!targets.length) { jmToast("没有可清除的已结束任务", 2200, "warn"); return; }
+    const ok = await jmConfirm("清除已结束任务",
+      "将从任务列表移除 " + targets.length + " 个已完成 / 失败 / 已取消的任务（历史记录保留）。",
+      { danger: true, okText: "清除" });
+    if (!ok) return;
+    let n = 0;
+    for (const st of targets) {
+      try {
+        const res = await fetch("/api/jobs/" + encodeURIComponent(st.summary.job_id), { method: "DELETE" });
+        if (res.ok) n += 1;
+      } catch (err) { /* 单个失败不打断其余清除 */ }
+    }
+    jmToast(n ? "已清除 " + n + " 个任务" : "清除失败，请稍后再试", 2400, n ? "ok" : "warn");
+    dlRefresh();
   }
 
   function dlLogNode(line, isError) {
@@ -1734,6 +2213,38 @@
     }
   }
 
+  /* 复制任务日志（P1-1）：优先实时 ring；终态任务 ring 为空时回源完整日志文件 */
+  async function dlCopyLog(id) {
+    const st = DL.byId.get(id);
+    if (!st) return;
+    let text = (st.ring || []).map((l) => l.line).join("\n").trim();
+    const s = st.summary.state;
+    if (!text && (s === "done" || s === "failed" || s === "cancelled")) {
+      try {
+        const res = await fetch("/api/jobs/" + encodeURIComponent(id) + "/log", { cache: "no-store" });
+        if (res.ok) text = (await res.text()).trim();
+      } catch (err) { /* 下面统一提示 */ }
+    }
+    if (!text) { jmToast("暂无日志可复制", 2200, "warn"); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      // WebView2 剪贴板权限异常时的兜底：临时 textarea + execCommand
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      ta.style.userSelect = "text";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+      ta.remove();
+      if (!ok) { jmToast("复制失败：请展开日志后手动选中复制", 3200, "warn"); return; }
+    }
+    jmToast("已复制日志到剪贴板", 1800, "ok");
+  }
+
   /* ---- 服务端同步：全量拉取后 diff 更新 ---- */
   async function dlRefresh() {
     let data;
@@ -1779,6 +2290,7 @@
       const st = DL.byId.get(job.job_id);
       if (st && st.dom) DL.tasks.appendChild(st.dom.li);
     });
+    dlApplyFilter();
     dlRenderMeta();
     DL.booted = true; // 首轮同步完成：此后新任务才触发跨窗提示
   }
@@ -1978,9 +2490,82 @@
       dlSubmit();
     });
     DL.refresh.addEventListener("click", () => dlRefresh());
+    // 输入实时解析反馈 + 粘贴剪贴板（P1-5）
+    DL.idsEl.addEventListener("input", dlRenderParseInfo);
+    if (DL.paste) DL.paste.addEventListener("click", dlPasteClipboard);
+    // 状态筛选 chips（P1-4）
+    if (DL.filters) {
+      DL.filters.addEventListener("click", (e) => {
+        const chip = e.target.closest(".dlv-chip");
+        if (!chip || !chip.dataset.filter) return;
+        DL.filter = chip.dataset.filter;
+        $$(".dlv-chip", DL.filters).forEach((c) =>
+          c.classList.toggle("is-active", c === chip));
+        dlApplyFilter();
+      });
+    }
+    if (DL.clearDone) DL.clearDone.addEventListener("click", dlClearFinished);
   }
   bindDownloadEvents();
   DL.timer = setInterval(dlRefresh, 2500); // 常驻低频轮询：后台任务完成也会更新徽标与提示
+
+  /* ---- 下载偏好持久化（Bug3 修复：此前后端 /api/settings 就绪但前端从未调用） ----
+     启动时 GET 回填表单；变更后 400ms 防抖 POST 合并写回。
+     client/proxy 同时被在线预览门面读取 → 预览侧跟随同一设置。 */
+  function prefsFromForm() {
+    return {
+      client: DL.client.value,
+      imageFormat: DL.imageFormat.value,
+      imageThreads: Math.min(64, Math.max(1, Number(DL.imageThreads.value) || 20)),
+      photoThreads: Math.min(16, Math.max(1, Number(DL.photoThreads.value) || 4)),
+      proxy: DL.proxy.value.trim(),
+    };
+  }
+
+  /* 旧版 settings.json 的中文标签 → 表单值（与后端 jm_api._IMPL_ALIASES / _fmt_proxies 对齐）；
+     旧版蛇形键（image_threads/format 等）一并迁移，新键（camelCase）优先 */
+  const LEGACY_CLIENT = { "移动端 API（推荐）": "api", "网页端（不稳定）": "html" };
+  const LEGACY_FORMAT = { "保持原格式": "original" };
+
+  function prefsApplyToForm(p) {
+    if (!p) return;
+    const client = LEGACY_CLIENT[p.client] || p.client;
+    if (client === "api" || client === "html") DL.client.value = client;
+    const fmt = LEGACY_FORMAT[p.imageFormat] || p.imageFormat || LEGACY_FORMAT[p.format] || p.format;
+    if (["original", "jpg", "png", "webp"].includes(fmt)) DL.imageFormat.value = fmt;
+    const it = Number(p.imageThreads != null ? p.imageThreads : p.image_threads);
+    const pt = Number(p.photoThreads != null ? p.photoThreads : p.photo_threads);
+    if (it >= 1 && it <= 64) DL.imageThreads.value = String(Math.round(it));
+    if (pt >= 1 && pt <= 16) DL.photoThreads.value = String(Math.round(pt));
+    if (typeof p.proxy === "string") DL.proxy.value = (p.proxy === "跟随系统") ? "" : p.proxy;
+  }
+
+  let prefsDirty = false;   // 用户已动手改过 → 不再用启动回填覆盖
+  let prefsTimer = 0;
+  function prefsSaveSoon() {
+    prefsDirty = true;
+    clearTimeout(prefsTimer);
+    prefsTimer = setTimeout(async () => {
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: prefsFromForm() }),
+        });
+      } catch (err) { /* 服务未就绪：静默，下次变更再存 */ }
+    }, 400);
+  }
+
+  async function prefsLoad() {
+    try {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (data && data.settings && !prefsDirty) prefsApplyToForm(data.settings);
+    } catch (err) { /* 静默：保持表单默认值 */ }
+  }
+  prefsLoad();
+  [DL.client, DL.imageFormat, DL.imageThreads, DL.photoThreads, DL.proxy]
+    .forEach((f) => f.addEventListener("change", prefsSaveSoon));
 
   /* ========================================================================
      下载历史（GET /api/history → 真列表；一键重下 / 单条删除 / 清空）

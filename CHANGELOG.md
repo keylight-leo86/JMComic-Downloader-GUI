@@ -4,6 +4,22 @@
 
 ## 未发布（原生动画再修正：托管状态切换 + 阅读窗不再误开浏览器）
 
+### 修复：部分窗口场景下无法拖动、三按钮全部失效
+- **`minimize_main()` 原本是空函数**（仅 docstring、未实现）→ 主窗「最小化」按钮在
+  任何时刻都静默失效（返回 `None`，前端收不到 ok/fail）。补全为与 `minimize_reader`
+  对称的托管状态切换：`_ensure_caption_now()` + `win.minimize()`，失败回退
+  `ShowWindow`（仍带 caption → 系统补间），保证原生最小化动画与同步语义。
+- **窗口句柄依赖「安装期一次性注册」存在竞态**：`get_main_hwnd()/get_reader_hwnd()`
+  在 WndProc 安装完成前为 0 → `window_action` 的 `window not ready` 分支统一拦截，
+  三个按钮（最小化/最大化/关闭）+ 拖动（drag/resize）+ 缩放同时失效——正是「部分
+  窗口情况下拖不动、三按钮失效」的根因。新增 `desktop.resolve_main_hwnd()/
+  resolve_reader_hwnd()`：按窗口标题实时 `FindWindowW` 定位并回写注册缓存，
+  作为 `server /api/window/*` 的兜底；冷启动 / WndProc 安装竞态期间仍能命中正确
+  窗口。
+- **前端冷启动重试增强**：`windowAction` 对 `window not ready` 由「仅补发 1 次
+  /400ms」改为「最多 3 次、间隔递增（300/600/900ms）」，覆盖 WebView2 冷启动窗口
+  晚建，按钮点了必定生效。
+
 ### 最小化/最大化/还原动画：保留 WS_CAPTION + 改走「托管状态切换」
 - **两要素缺一不可**：
   1. **样式位（WS_CAPTION）**：DWM 把窗口识别为“普通顶层窗口”、为最小化→任务栏 /

@@ -517,18 +517,42 @@ def _make_wndproc(title: str, min_w: int, min_h: int, intercept_close: bool):
                 # 有托管处理会吞掉。仅当原始 proc 缺失（窗口晚建）时退回自绘轮询。
                 _resize_hits = (HTLEFT, HTRIGHT, HTTOP, HTBOTTOM,
                                 HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT)
-                if wparam == HTCAPTION or wparam in _resize_hits:
+                if wparam == HTCAPTION:
+                    # 双击标题栏 = 最大化/还原。不能在 NCLBUTTONDBLCLK 才判——首次按下
+                    # 已交还原生移动 modal 循环，第二次按下常被吞掉/仅放大不铺满；故在
+                    # NCLBUTTONDOWN 按“双击时间窗口 + 坐标漂移阈值”主动识别并拦截。
+                    now = _time.time()
+                    x = ctypes.c_short(lparam & 0xFFFF).value
+                    y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                    last = state.get("capture_dc")
+                    dc_ms = user32.GetDoubleClickTime() or 500
+                    cx = user32.GetSystemMetrics(50) or 4   # SM_CXDOUBLECLK
+                    cy = user32.GetSystemMetrics(51) or 4
+                    if last:
+                        d_ok = (now - last[0]) * 1000.0 <= dc_ms
+                        p_ok = (abs(x - last[1]) <= cx and abs(y - last[2]) <= cy)
+                        if d_ok and p_ok:
+                            state["capture_dc"] = None   # 消费本次双击
+                            _caption_toggle(title, h)
+                            return 0
+                    state["capture_dc"] = [now, x, y]
                     if _NATIVE_DRAG and _orig_wndproc.get(title):
                         user32.ReleaseCapture()
                         return user32.CallWindowProcW(_orig_wndproc[title], h, msg, wparam, lparam)
-                    if wparam == HTCAPTION:
-                        start_manual_drag(h)
+                    start_manual_drag(h)
+                    return 0
+                if wparam in _resize_hits:
+                    if _NATIVE_DRAG and _orig_wndproc.get(title):
+                        user32.ReleaseCapture()
+                        return user32.CallWindowProcW(_orig_wndproc[title], h, msg, wparam, lparam)
                     return 0
             if msg == WM_NCLBUTTONDBLCLK:
-                # 标题栏双击最大化/还原（同理：DOM dblclick 收不到）
+                # 标题栏双击最大化/还原（DOM dblclick 收不到）。主路径已由上面
+                # NCLBUTTONDOWN 识别拦截；此处保留作 NCLBUTTONDBLCLK 直达的兜底。
                 if wparam == HTCAPTION:
-                    user32.SendMessageW(h, WM_SYSCOMMAND,
-                                        SC_RESTORE if user32.IsZoomed(h) else SC_MAXIMIZE, 0)
+                    if state.get("capture_dc"):
+                        state["capture_dc"] = None   # 清除，避免与 DOWN 路径重复消费
+                    _caption_toggle(title, h)
                     return 0
             if msg == WM_APP_MOVERESIZE:
                 start_manual_drag(h)
@@ -721,6 +745,33 @@ def _managed_state_change(win, action: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _caption_toggle(title: str, hwnd) -> None:
+    """标题栏双击/普通最大化切换统一入口。
+
+    仅在本 WndProc（GUI 线程）内调用。复用托管状态切换（正在 GUI 线程，
+    win.maximize()/restore() 经 Control.Invoke 同步直执行、不重入），保证
+    WinForms WindowState 与 Win32 同步 → 原生最大/还原补间动画与“铺满”生效；
+    托管不可用（窗口晚建）才退回 ShowWindow（仍带 caption → 系统补间）。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        zoomed = bool(user32.IsZoomed(int(hwnd)))
+        win = None
+        if title == APP_TITLE and _win_main:
+            win = _win_main[0]
+        elif title == READER_TITLE and _win_reader:
+            win = _win_reader[0]
+        if win is not None:
+            action = "restore" if zoomed else "maximize"
+            if _managed_state_change(win, action):
+                return
+        # 手动/兜底：ShowWindow 同步切换（GUI 线程直接生效，caption 在位 → 动画保留）
+        user32.ShowWindow(int(hwnd),
+                          SW_RESTORE if zoomed else SW_MAXIMIZE)
+    except Exception:  # noqa: BLE001 尽力而为
+        pass
 
 
 def _strip_caption(title: str) -> bool:
@@ -978,6 +1029,37 @@ def close_reader() -> dict:
     return {"ok": True}
 
 
+# --------------------------------------------------------------------------- #
+# 句柄动态解析（server /api/window/* 兜底）
+#   冷启动 / WndProc 安装竞态期间，静态注册句柄（set_main_hwnd/set_reader_hwnd）
+#   可能尚未写入，导致按钮/拖动/缩放统一报 "window not ready"（三按钮全失效、
+#   拖不动）。本函数按窗口标题实时 FindWindowW 定位并回写注册缓存，保证任意
+#   时刻都能解析到正确 hwnd。
+# --------------------------------------------------------------------------- #
+def resolve_main_hwnd() -> int:
+    """实时定位主窗 hwnd（兜底），命中则回写注册缓存。返回 0 表示确无窗口。"""
+    try:
+        _setup_user32()
+        h = int(ctypes.windll.user32.FindWindowW(None, APP_TITLE) or 0)
+        if h:
+            gui_server.set_main_hwnd(h)
+        return h
+    except Exception:  # noqa: BLE001 尽力而为
+        return 0
+
+
+def resolve_reader_hwnd() -> int:
+    """实时定位阅读窗 hwnd（兜底），命中则回写注册缓存。返回 0 表示确无窗口。"""
+    try:
+        _setup_user32()
+        h = int(ctypes.windll.user32.FindWindowW(None, READER_TITLE) or 0)
+        if h:
+            gui_server.set_reader_hwnd(h)
+        return h
+    except Exception:  # noqa: BLE001 尽力而为
+        return 0
+
+
 def toggle_reader_maximize() -> dict:
     """阅读窗 最大化/还原（托管 API 保持 WinForms WindowState 同步 → 原生补间）。"""
     if not _win_reader:
@@ -1016,7 +1098,6 @@ def minimize_main() -> dict:
         return {"ok": False, "error": "window not ready"}
     _ensure_caption_now(hwnd)
     if not _managed_state_change(_win_main[0], "minimize"):
-        _setup_user32()
         ctypes.windll.user32.ShowWindow(int(hwnd), SW_MINIMIZE)
     return {"ok": True}
 

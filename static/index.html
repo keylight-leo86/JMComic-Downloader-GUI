@@ -91,6 +91,8 @@
               <div class="pv-toolbar-mid" id="pv-results-meta"></div>
             </div>
             <div class="pv-grid" id="pv-grid"></div>
+            <!-- 无限滚动哨兵：接近视口时自动加载下一页（保留「加载更多」按钮兜底） -->
+            <div id="pv-sentinel" aria-hidden="true"></div>
             <div class="pv-more-row" id="pv-more-row" hidden>
               <button class="btn btn-ghost" id="pv-load-more">加载更多</button>
             </div>
@@ -112,9 +114,13 @@
 
         <form class="dlv-form" id="dlv-form" autocomplete="off">
           <div class="dlv-row dlv-row-ids">
-            <label class="dlv-label" for="dlv-ids">车号 / 章节 ID</label>
+            <div class="dlv-label-row">
+              <label class="dlv-label" for="dlv-ids">车号 / 章节 ID</label>
+              <button type="button" class="btn btn-ghost btn-sm" id="dlv-paste" title="读取剪贴板内容并追加到输入框">粘贴剪贴板</button>
+            </div>
             <textarea id="dlv-ids" class="dlv-input dlv-ids" rows="3"
                       placeholder="支持空格、逗号、换行分隔，例如：1455254, 1002, https://devapp.18comic.cc/comic/detail?id=1455254"></textarea>
+            <div class="dlv-parse" id="dlv-parse" hidden></div>
           </div>
           <div class="dlv-row dlv-row-mode">
             <label class="dlv-label">下载类型</label>
@@ -162,9 +168,18 @@
           <div class="dlv-list-head">
             <h3>任务</h3>
             <span class="dlv-list-meta" id="dlv-list-meta"></span>
+            <div class="dlv-filters" id="dlv-filters" role="group" aria-label="按状态筛选任务">
+              <button type="button" class="dlv-chip is-active" data-filter="all">全部</button>
+              <button type="button" class="dlv-chip" data-filter="active">进行中</button>
+              <button type="button" class="dlv-chip" data-filter="done">已完成</button>
+              <button type="button" class="dlv-chip" data-filter="bad">失败/取消</button>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" id="dlv-clear-done"
+                    title="从任务列表移除已完成 / 失败 / 已取消的任务（历史记录保留）">清除已完成</button>
             <button type="button" class="btn btn-ghost btn-sm" id="dlv-refresh">刷新</button>
           </div>
           <ul class="dlv-tasks" id="dlv-tasks"></ul>
+          <div class="dlv-list-empty" id="dlv-empty" hidden></div>
         </div>
       </section>
 
@@ -192,7 +207,7 @@
       <section class="view" id="view-settings" data-view="settings">
         <div class="view-head">
           <h1>设置</h1>
-          <p class="view-sub">保存位置与下载偏好（自动保存，兼容迁移旧版配置）</p>
+          <p class="view-sub">保存位置、外观偏好（自动保存到本机）；下载偏好请见「下载任务」页，修改即自动保存</p>
         </div>
         <div class="settings-list">
           <div class="setting-row">
@@ -202,6 +217,43 @@
             </div>
             <div class="setting-value"><span id="output-path">…</span></div>
             <button class="btn btn-ghost" id="open-output">打开目录</button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">外观主题</span>
+              <span class="setting-desc">浅色 / 深色；仅影响本应用界面，保存到本机</span>
+            </div>
+            <select id="set-theme" class="setting-select" aria-label="外观主题">
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">界面缩放</span>
+              <span class="setting-desc">整体放大界面元素；字偏小时建议 110% / 125%</span>
+            </div>
+            <select id="set-zoom" class="setting-select" aria-label="界面缩放">
+              <option value="1">100%</option>
+              <option value="1.1">110%</option>
+              <option value="1.25">125%</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">动效</span>
+              <span class="setting-desc">关闭后去除全部动画与过渡，界面更安静（跟随系统的减弱动效偏好仍生效）</span>
+            </div>
+            <select id="set-motion" class="setting-select" aria-label="动效开关">
+              <option value="on">开启</option>
+              <option value="off">关闭</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">下载偏好（自动保存）</span>
+              <span class="setting-desc">在「下载任务」页修改客户端 / 图片格式 / 并发 / 代理后自动保存，下次启动沿用；在线预览也跟随同一客户端与代理设置</span>
+            </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">

@@ -186,6 +186,9 @@ def window_action(action: str, qs: dict | None = None) -> dict:
 
         hwnd = get_reader_hwnd()
         if not hwnd:
+            # 静态注册句柄可能因冷启动/WndProc 安装竞态尚未写入 → 按标题实时定位
+            hwnd = gui_desktop.resolve_reader_hwnd()
+        if not hwnd:
             return {"ok": False, "error": "window not ready"}
         if action == "minimize":
             return gui_desktop.minimize_reader()
@@ -238,6 +241,10 @@ def window_action(action: str, qs: dict | None = None) -> dict:
             return {"ok": False, "error": str(exc)}
 
     hwnd = get_main_hwnd()
+    if not hwnd:
+        from . import desktop as gui_desktop  # 延迟导入，避免循环依赖
+
+        hwnd = gui_desktop.resolve_main_hwnd()
     if not hwnd:
         return {"ok": False, "error": "window not ready"}
     if action == "minimize":
