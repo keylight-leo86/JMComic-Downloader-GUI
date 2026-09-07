@@ -745,6 +745,27 @@
     }
   }
 
+  // 预览详情页「下载此本」→ 不直接入队，跳到「下载任务」页预填车号/章节，便于配置后发起。
+  // 独立阅读窗没有「下载任务」配置页 → 回退为直接入队。
+  function pvGoDownload(kind, ids, label, btn) {
+    const isReaderWin = document.body.classList.contains("is-reader-win");
+    if (isReaderWin) {
+      return pvSubmitDownload(kind, ids, label, btn);
+    }
+    const idsEl = $("#dlv-ids");
+    const text = ids.join("\n");
+    idsEl.value = (idsEl.value || "").trim() ? idsEl.value.trim() + "\n" + text : text;
+    // 同步下载类型（本子 / 章节）
+    document.querySelectorAll("#dlv-kind .dlv-seg-item").forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.kind === (kind === "photo" ? "photo" : "album")));
+    if (typeof idsEl.dispatchEvent === "function") {
+      idsEl.dispatchEvent(new Event("input", { bubbles: true })); // 触发实时解析/偏好保存
+    }
+    switchView("download");
+    idsEl.focus();
+    jmToast("已填入下载任务：" + label + "，配置选项后点「开始下载」", 3600, "ok");
+  }
+
   async function openAlbum(id) {
     PV.detail.innerHTML = "";
     const loading = el("div", "pv-loading");
@@ -777,9 +798,9 @@
     toolbar.appendChild(el("span", "pv-toolbar-spacer"));
     const dlBtn = el("button", "btn btn-primary btn-sm", "下载此本");
     dlBtn.type = "button";
-    dlBtn.title = "将 JM" + album.id + " 整本加入下载队列";
+    dlBtn.title = "跳转到「下载任务」页配置后启动 JM" + album.id + " 整本下载";
     dlBtn.addEventListener("click", () => {
-      pvSubmitDownload("album", [String(album.id)], "JM" + album.id, dlBtn);
+      pvGoDownload("album", [String(album.id)], "JM" + album.id, dlBtn);
     });
     toolbar.appendChild(dlBtn);
     PV.detail.appendChild(toolbar);

@@ -24,6 +24,15 @@ from typing import Callable, Deque, Optional
 
 TERMINAL_STATES = {"done", "failed", "cancelled"}
 
+# 空闲看门狗：下载核心（jmcomic）在某张图片 CDN 请求真正挂起（连接超时后重试仍不
+# 收敛）时，`download()` 会被线程池 join 阻塞而永不返回，子进程一直 running、PDF 合并
+# 不再开始 —— 任务在 UI 上表现为"卡死"（实测例：单张图 curl 超时后无任何输出）。
+# 看门狗对 running 任务做"无进展检测"：超过这些阈值仍无任何 stdout/stderr 输出，
+# 即终止子进程并让任务收敛为明确的失败（而非无限挂起）。
+IDLE_TIMEOUT = 180.0       # 连续无任何输出达到该秒数 → 判为卡死
+IDLE_MIN_ELAPSED = 60.0    # 至少已运行该秒数才允许判卡死（避开启动期误判）
+WD_INTERVAL = 15.0         # 看门狗检查周期
+
 # PyInstaller 打包版：下载子进程优先使用与主 GUI exe 同目录的独立 Worker.exe
 # （console 子系统，启动开销小；GUI 以 CREATE_NO_WINDOW 拉起，避免弹黑窗）。
 # 若同目录不存在 Worker.exe（单 exe 分发），则回退为「本 exe --jm-worker」自我拉起：
@@ -76,6 +85,7 @@ class JobRecord:
     summary: dict = field(default_factory=dict)
     log_path: str = ""
     progress: Optional[dict] = None   # 最近一次 @@PROGRESS@@ 事件数据（下载/PDF 阶段）
+    last_activity: float = 0.0        # 最近一次收到子进程输出的时间（空闲看门狗判定依据）
 
     # 前端「一键重下/重试」可直接回读 options 字段再 POST /api/jobs
     def to_options_dict(self) -> dict:
@@ -400,11 +410,16 @@ class JobManager:
             err_t = threading.Thread(target=self._drain_stream, args=(proc.stderr, rec), daemon=True)
             out_t.start()
             err_t.start()
+            rec.last_activity = time.time()
+            wd_stop = threading.Event()
+            wd_t = threading.Thread(target=self._idle_watchdog, args=(rec, proc, wd_stop), daemon=True)
+            wd_t.start()
 
             try:
                 rc = proc.wait()
             except Exception:
                 rc = -1
+            wd_stop.set()
 
             out_t.join(timeout=2.0)
             err_t.join(timeout=2.0)
@@ -418,13 +433,40 @@ class JobManager:
                 rec.summary = {"ok": True}
             else:
                 rec.state = "failed"
-                rec.summary = {"ok": False, "returncode": rc}
+                if rec.summary.get("timed_out"):
+                    rec.summary["returncode"] = rc   # 保留看门狗超时归因，附加退出码
+                else:
+                    rec.summary = {"ok": False, "returncode": rc}
             self._emit(rec, {"type": "status", "state": rec.state, "returncode": rc})
             self._remember_terminal(rec)
+
+    def _idle_watchdog(self, rec: JobRecord, proc: subprocess.Popen, stop: threading.Event) -> None:
+        """后台检查：running 任务若连续 IDLE_TIMEOUT 秒无任何输出 → 终止子进程。
+
+        终止后由 _run 主线程 wait() 到非 0 退出码自然收敛为 failed，
+        并在 summary 记录超时，避免下载核心网络挂起导致任务无限卡死。
+        """
+        while not stop.wait(WD_INTERVAL):
+            if rec.state != "running":
+                return
+            if time.time() - rec.started_at < IDLE_MIN_ELAPSED:
+                continue
+            if rec.last_activity and (time.time() - rec.last_activity) <= IDLE_TIMEOUT:
+                continue
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            rec.summary = {
+                "timed_out": True,
+                "reason": "下载长时间无进度（可能单张图片网络超时挂起），已自动终止",
+            }
+            return
 
     def _drain_stream(self, stream, rec: JobRecord) -> None:
         for raw in iter(stream.readline, ""):
             line = raw.rstrip("\n")
+            rec.last_activity = time.time()
             if not line:
                 continue
             try:
