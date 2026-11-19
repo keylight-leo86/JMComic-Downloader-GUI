@@ -19,7 +19,7 @@ use crate::download::{self, JobSpec};
 use crate::events::{Failure, LogSink, Progress, ProgressSnapshot, StopFlag, Summary};
 use crate::naming;
 use crate::option;
-use crate::settings::Settings;
+use crate::settings::{normalize_ui_scale, Settings};
 use crate::win_theme::{self, SystemAppearance, ThemeMode};
 
 const PROXY_SYSTEM_LABEL: &str = "跟随系统";
@@ -33,8 +33,8 @@ pub fn launch() -> Result<(), String> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1160.0, 850.0])
-            .with_min_inner_size([1000.0, 720.0])
+            .with_inner_size([1200.0, 880.0])
+            .with_min_inner_size([1040.0, 740.0])
             .with_title(title.clone())
             .with_app_id("JMComic.Downloader.GUI")
             .with_icon(icon),
@@ -168,6 +168,8 @@ pub struct App {
     applied_dark: Option<bool>,
     palette: Palette,
     last_theme_check: Instant,
+    /// 界面缩放（字号比例），1.0 = 100%
+    ui_scale: f32,
 }
 
 impl App {
@@ -175,6 +177,7 @@ impl App {
         let settings = Settings::load();
         let appearance = win_theme::detect();
         let theme_mode = ThemeMode::from_key(&settings.theme);
+        let ui_scale = normalize_ui_scale(settings.ui_scale);
         let dark = effective_dark(theme_mode, appearance);
         let palette = if dark {
             Palette::dark(accent_of(&appearance))
@@ -184,6 +187,7 @@ impl App {
 
         install_fonts(&cc.egui_ctx);
         apply_visuals(&cc.egui_ctx, &palette, dark);
+        cc.egui_ctx.set_zoom_factor(ui_scale);
 
         let mut proxy = settings.proxy.clone();
         proxy = match proxy.trim() {
@@ -227,6 +231,7 @@ impl App {
             applied_dark: Some(dark),
             palette,
             last_theme_check: Instant::now(),
+            ui_scale,
             settings,
         };
         app.push_log("等待任务。输入车号后点击“开始下载”（Ctrl+Enter 也可开始）。");
@@ -281,6 +286,7 @@ impl App {
         settings.proxy = self.proxy_arg();
         settings.option = self.option_path.trim().to_string();
         settings.theme = self.theme_mode.key().to_string();
+        settings.ui_scale = self.ui_scale;
         settings.apply_output(&self.output);
         let _ = settings.save();
         self.settings = settings;
@@ -522,6 +528,26 @@ impl eframe::App for App {
             self.start(ctx);
         }
 
+        // 快捷键缩放：Ctrl+= 放大、Ctrl+- 缩小、Ctrl+0 复位
+        if ctx.input(|input| input.modifiers.ctrl) {
+            let (zoom_in, zoom_out, reset) = ctx.input(|input| {
+                (
+                    input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals),
+                    input.key_pressed(egui::Key::Minus),
+                    input.key_pressed(egui::Key::Num0),
+                )
+            });
+            if zoom_in {
+                self.set_ui_scale(ctx, self.ui_scale + 0.05);
+            }
+            if zoom_out {
+                self.set_ui_scale(ctx, self.ui_scale - 0.05);
+            }
+            if reset {
+                self.set_ui_scale(ctx, 1.0);
+            }
+        }
+
         self.header(ctx);
         self.footer(ctx);
         self.sidebar(ctx);
@@ -533,6 +559,7 @@ impl App {
     fn header(&mut self, ctx: &egui::Context) {
         let palette = self.palette;
         let mut theme_changed = false;
+        let mut scale_changed: Option<f32> = None;
 
         egui::TopBottomPanel::top("titlebar")
             .frame(
@@ -545,21 +572,42 @@ impl App {
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new("JMComic Downloader")
-                                .size(19.0)
+                                .size(20.0)
                                 .strong()
                                 .color(palette.text),
                         );
                         ui.add_space(2.0);
                         ui.label(
                             RichText::new("批量下载 · 近乎无损 PDF · 自动清理 · 实时日志")
-                                .size(12.0)
+                                .size(12.5)
                                 .color(palette.muted),
                         );
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         version_chip(ui, &palette);
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
+
+                        // 界面缩放（字号）
+                        let mut scale = self.ui_scale;
+                        egui::ComboBox::from_id_salt("ui_scale")
+                            .selected_text(format!("{:.0}%", scale * 100.0))
+                            .width(78.0)
+                            .show_ui(ui, |ui| {
+                                for value in [1.0f32, 1.1, 1.25, 1.5, 1.75] {
+                                    ui.selectable_value(
+                                        &mut scale,
+                                        value,
+                                        format!("{:.0}%", value * 100.0),
+                                    );
+                                }
+                            });
+                        if (scale - self.ui_scale).abs() > 0.001 {
+                            scale_changed = Some(scale);
+                        }
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("缩放").size(12.5).color(palette.muted));
+                        ui.add_space(10.0);
 
                         let mut selected = self.theme_mode;
                         egui::ComboBox::from_id_salt("theme")
@@ -575,7 +623,7 @@ impl App {
                             theme_changed = true;
                         }
                         ui.add_space(4.0);
-                        ui.label(RichText::new("主题").size(12.0).color(palette.muted));
+                        ui.label(RichText::new("主题").size(12.5).color(palette.muted));
                     });
                 });
 
@@ -591,6 +639,20 @@ impl App {
             self.applied_dark = None; // 强制下一帧重建样式
             self.save_settings();
         }
+        if let Some(scale) = scale_changed {
+            self.set_ui_scale(ctx, scale);
+        }
+    }
+
+    /// 调整界面缩放并持久化（1.0 = 100%，范围 80%–200%）。
+    fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {
+        let scale = normalize_ui_scale(scale);
+        if (scale - self.ui_scale).abs() < 0.001 {
+            return;
+        }
+        self.ui_scale = scale;
+        ctx.set_zoom_factor(scale);
+        self.save_settings();
     }
 
     fn footer(&mut self, ctx: &egui::Context) {
@@ -627,7 +689,7 @@ impl App {
                             .animate(self.busy && fraction <= 0.0),
                     );
                     ui.add_space(6.0);
-                    ui.label(RichText::new(text).size(12.0).color(palette.muted));
+                    ui.label(RichText::new(text).size(12.5).color(palette.muted));
 
                     if self.busy {
                         let speed = if elapsed.as_secs_f64() > 0.2 {
@@ -641,7 +703,7 @@ impl App {
                                 speed,
                                 format_duration(elapsed)
                             ))
-                            .size(12.0)
+                            .size(12.5)
                             .color(palette.muted),
                         );
                     }
@@ -729,7 +791,7 @@ impl App {
                             ui.add_space(4.0);
                             ui.label(
                                 RichText::new(self.notice.clone())
-                                    .size(12.0)
+                                    .size(12.5)
                                     .color(palette.danger),
                             );
                         }
@@ -982,7 +1044,7 @@ impl App {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new("可选中复制").size(10.5).color(palette.muted),
+                                        RichText::new("可选中复制").size(11.0).color(palette.muted),
                                     );
                                 },
                             );
@@ -1005,7 +1067,7 @@ impl App {
                                             egui::Label::new(
                                                 RichText::new(self.log.as_str())
                                                     .monospace()
-                                                    .size(12.0)
+                                                    .size(12.5)
                                                     .color(palette.log_text),
                                             )
                                             .wrap(),
@@ -1034,11 +1096,11 @@ fn concurrency_input(ui: &mut egui::Ui, value: &mut usize, max: usize) {
 }
 
 fn field_label(ui: &mut egui::Ui, palette: &Palette, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(palette.muted));
+    ui.label(RichText::new(text).size(11.5).color(palette.muted));
 }
 
 fn section_title(ui: &mut egui::Ui, palette: &Palette, text: &str) {
-    ui.label(RichText::new(text).size(13.0).strong().color(palette.text));
+    ui.label(RichText::new(text).size(14.0).strong().color(palette.text));
 }
 
 fn version_chip(ui: &mut egui::Ui, palette: &Palette) {
@@ -1066,7 +1128,7 @@ fn status_chip(ui: &mut egui::Ui, palette: &Palette, status: &str, busy: bool, f
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.0, color);
-        ui.label(RichText::new(status).size(12.0).color(palette.text));
+        ui.label(RichText::new(status).size(12.5).color(palette.text));
     });
 }
 
@@ -1162,15 +1224,19 @@ fn apply_visuals(ctx: &egui::Context, palette: &Palette, dark: bool) {
     style.interaction.selectable_labels = true;
     style.text_styles.insert(
         egui::TextStyle::Body,
-        egui::FontId::new(13.0, FontFamily::Proportional),
+        egui::FontId::new(14.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        egui::FontId::new(13.0, FontFamily::Proportional),
+        egui::FontId::new(14.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Small,
-        egui::FontId::new(11.0, FontFamily::Proportional),
+        egui::FontId::new(11.5, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Monospace,
+        egui::FontId::new(13.5, FontFamily::Monospace),
     );
     ctx.set_style(style);
 }

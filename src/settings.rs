@@ -12,6 +12,20 @@ use crate::config::{
 pub const APP_FOLDER: &str = "JMComic-Downloader-GUI";
 pub const LEGACY_APP_FOLDER: &str = "JMComicDownloader";
 
+/// 界面缩放的默认值与范围。
+pub const DEFAULT_UI_SCALE: f32 = 1.0;
+pub const MIN_UI_SCALE: f32 = 0.8;
+pub const MAX_UI_SCALE: f32 = 2.0;
+
+/// 把缩放值收敛到合法范围，并按 5% 对齐。
+pub fn normalize_ui_scale(scale: f32) -> f32 {
+    if !scale.is_finite() {
+        return DEFAULT_UI_SCALE;
+    }
+    let clamped = scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
+    (clamped * 20.0).round() / 20.0
+}
+
 /// EXE 所在目录；开发模式下是 `target/debug` 或 `target/release`。
 pub fn app_directory() -> PathBuf {
     std::env::current_exe()
@@ -74,6 +88,8 @@ pub struct Settings {
     pub option: String,
     /// 界面主题：`auto` / `light` / `dark`
     pub theme: String,
+    /// 界面缩放（字号比例），1.0 表示 100%
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
@@ -90,6 +106,7 @@ impl Default for Settings {
             proxy: PROXY_SYSTEM.to_string(),
             option: String::new(),
             theme: "auto".to_string(),
+            ui_scale: DEFAULT_UI_SCALE,
         }
     }
 }
@@ -153,6 +170,8 @@ impl Settings {
             "light" | "dark" => self.theme.trim().to_ascii_lowercase(),
             _ => "auto".to_string(),
         };
+
+        self.ui_scale = normalize_ui_scale(self.ui_scale);
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -212,6 +231,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_scale_is_normalized() {
+        assert_eq!(normalize_ui_scale(1.0), 1.0);
+        assert_eq!(normalize_ui_scale(0.1), MIN_UI_SCALE);
+        assert_eq!(normalize_ui_scale(9.0), MAX_UI_SCALE);
+        assert_eq!(normalize_ui_scale(1.23), 1.25);
+        assert_eq!(normalize_ui_scale(f32::NAN), DEFAULT_UI_SCALE);
+    }
 
     #[test]
     fn default_output_follows_app_dir() {
