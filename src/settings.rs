@@ -12,10 +12,13 @@ use crate::config::{
 pub const APP_FOLDER: &str = "JMComic-Downloader-GUI";
 pub const LEGACY_APP_FOLDER: &str = "JMComicDownloader";
 
-/// 界面缩放的默认值与范围。
+/// 界面缩放的默认值与范围（相对基准，1.0 即界面上的 100%）。
 pub const DEFAULT_UI_SCALE: f32 = 1.0;
 pub const MIN_UI_SCALE: f32 = 0.8;
 pub const MAX_UI_SCALE: f32 = 2.0;
+
+/// 缩放基准：界面上的 100% 实际按 1.25 倍渲染（即旧版本的 125%）。
+pub const UI_BASE_SCALE: f32 = 1.25;
 
 /// 把缩放值收敛到合法范围，并按 5% 对齐。
 pub fn normalize_ui_scale(scale: f32) -> f32 {
@@ -24,6 +27,11 @@ pub fn normalize_ui_scale(scale: f32) -> f32 {
     }
     let clamped = scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
     (clamped * 20.0).round() / 20.0
+}
+
+/// 相对缩放 → egui 的实际 zoom_factor。
+pub fn effective_zoom(relative: f32) -> f32 {
+    (normalize_ui_scale(relative) * UI_BASE_SCALE).clamp(0.6, 2.5)
 }
 
 /// EXE 所在目录；开发模式下是 `target/debug` 或 `target/release`。
@@ -239,6 +247,15 @@ mod tests {
         assert_eq!(normalize_ui_scale(9.0), MAX_UI_SCALE);
         assert_eq!(normalize_ui_scale(1.23), 1.25);
         assert_eq!(normalize_ui_scale(f32::NAN), DEFAULT_UI_SCALE);
+    }
+
+    #[test]
+    fn effective_zoom_uses_125_percent_baseline() {
+        assert_eq!(effective_zoom(1.0), 1.25);
+        assert_eq!(effective_zoom(1.25), 1.5625);
+        assert_eq!(effective_zoom(1.5), 1.875);
+        assert_eq!(effective_zoom(2.0), 2.5);
+        assert_eq!(effective_zoom(0.8), 1.0);
     }
 
     #[test]

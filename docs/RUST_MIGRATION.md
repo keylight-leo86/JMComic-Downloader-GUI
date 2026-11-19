@@ -126,7 +126,8 @@ JoinSet(每车号一个任务) —— Semaphore(album_concurrency)
 - `win_theme.rs` 读取 `AppsUseLightTheme` 与 `AccentColor`（ABGR），解析失败时回退浅色 + 默认绿色；
 - `gui.rs` 根据主题生成两套调色板，并按强调色亮度自动选择按钮前景色（浅色强调色用深色文字）；
 - 字体：Segoe UI（西文）+ 等线/黑体（中文）+ Consolas（等宽），均从系统字体目录读取，不随包分发字体；
-- 界面缩放：标题栏可选 100%–175%，或 `Ctrl + =` / `Ctrl + -` / `Ctrl + 0`，通过 `Context::set_zoom_factor` 统一缩放文字与控件，取值持久化到 `settings.json` 的 `ui_scale`；
+- 界面缩放：标题栏可选 100%–150%，或 `Ctrl + =` / `Ctrl + -` / `Ctrl + 0`；缩放值是**相对基准**（`UI_BASE_SCALE = 1.25`），即界面上的 100% 实际按 1.25 倍渲染（等同旧版本的 125%），通过 `Context::set_zoom_factor` 统一缩放文字与控件，并持久化到 `settings.json` 的 `ui_scale`；
+- 窄窗口（高缩放）时侧栏宽度按窗口比例收窄（360–438pt），底栏按钮自动换行，避免内容溢出导致面板被撑宽；
 - 日志以 100 ms 批次刷新，避免高频日志触发整块文本重排；
 - 任务在独立线程的 tokio 运行时执行，界面线程只做绘制与事件轮询。
 

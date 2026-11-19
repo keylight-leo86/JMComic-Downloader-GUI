@@ -19,7 +19,7 @@ use crate::download::{self, JobSpec};
 use crate::events::{Failure, LogSink, Progress, ProgressSnapshot, StopFlag, Summary};
 use crate::naming;
 use crate::option;
-use crate::settings::{normalize_ui_scale, Settings};
+use crate::settings::{effective_zoom, normalize_ui_scale, Settings};
 use crate::win_theme::{self, SystemAppearance, ThemeMode};
 
 const PROXY_SYSTEM_LABEL: &str = "跟随系统";
@@ -187,7 +187,7 @@ impl App {
 
         install_fonts(&cc.egui_ctx);
         apply_visuals(&cc.egui_ctx, &palette, dark);
-        cc.egui_ctx.set_zoom_factor(ui_scale);
+        cc.egui_ctx.set_zoom_factor(effective_zoom(ui_scale));
 
         let mut proxy = settings.proxy.clone();
         proxy = match proxy.trim() {
@@ -594,7 +594,7 @@ impl App {
                             .selected_text(format!("{:.0}%", scale * 100.0))
                             .width(78.0)
                             .show_ui(ui, |ui| {
-                                for value in [1.0f32, 1.1, 1.25, 1.5, 1.75] {
+                                for value in [1.0f32, 1.1, 1.25, 1.5] {
                                     ui.selectable_value(
                                         &mut scale,
                                         value,
@@ -651,7 +651,7 @@ impl App {
             return;
         }
         self.ui_scale = scale;
-        ctx.set_zoom_factor(scale);
+        ctx.set_zoom_factor(effective_zoom(scale));
         self.save_settings();
     }
 
@@ -681,6 +681,8 @@ impl App {
                     Stroke::new(1.0, palette.border),
                 );
 
+                // 窄窗口（高缩放）时把按钮移到第二行，避免被裁掉
+                let narrow = ui.available_width() < 900.0;
                 ui.horizontal(|ui| {
                     let (fraction, text) = progress_text(snapshot, self.busy);
                     ui.add(
@@ -708,65 +710,80 @@ impl App {
                         );
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let start_enabled = !self.busy;
-                        let start = ui.add_enabled(
-                            start_enabled,
-                            egui::Button::new(
-                                RichText::new("开始下载").color(palette.on_accent).strong(),
-                            )
-                            .fill(if start_enabled {
-                                palette.accent
-                            } else {
-                                palette.border
-                            })
-                            .corner_radius(CornerRadius::same(6))
-                            .min_size(egui::vec2(122.0, 34.0)),
-                        );
-                        if start.clicked() {
-                            let ctx = ui.ctx().clone();
-                            self.start(&ctx);
-                        }
-
-                        let stop = ui.add_enabled(
-                            self.busy,
-                            egui::Button::new(RichText::new("停止").color(palette.danger))
-                                .corner_radius(CornerRadius::same(6))
-                                .min_size(egui::vec2(78.0, 34.0)),
-                        );
-                        if stop.clicked() {
-                            self.stop.stop();
-                            self.status = "正在停止…".to_string();
-                            self.push_log("已请求停止任务。");
-                        }
-
-                        if ui
-                            .add(
-                                egui::Button::new("打开 PDF 目录")
-                                    .corner_radius(CornerRadius::same(6))
-                                    .min_size(egui::vec2(126.0, 34.0)),
-                            )
-                            .clicked()
-                        {
-                            self.open_pdf_dir();
-                        }
-
-                        ui.add_space(6.0);
-                        let failed = self
-                            .summary
-                            .as_ref()
-                            .map(|summary| !summary.failures.is_empty())
-                            .unwrap_or(false);
-                        status_chip(ui, &palette, &self.status, self.busy, failed);
-                    });
+                    // 窄窗口（高缩放）时按钮换到下一行，避免被裁掉
+                    if !narrow {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.footer_actions(ui, &palette);
+                        });
+                    }
                 });
+
+                if narrow {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.footer_actions(ui, &palette);
+                        });
+                    });
+                }
             });
+    }
+
+    /// 底栏右侧：状态指示 + 打开 PDF 目录 / 停止 / 开始下载。
+    fn footer_actions(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let start_enabled = !self.busy;
+        let start = ui.add_enabled(
+            start_enabled,
+            egui::Button::new(RichText::new("开始下载").color(palette.on_accent).strong())
+                .fill(if start_enabled {
+                    palette.accent
+                } else {
+                    palette.border
+                })
+                .corner_radius(CornerRadius::same(6))
+                .min_size(egui::vec2(122.0, 34.0)),
+        );
+        if start.clicked() {
+            let ctx = ui.ctx().clone();
+            self.start(&ctx);
+        }
+
+        let stop = ui.add_enabled(
+            self.busy,
+            egui::Button::new(RichText::new("停止").color(palette.danger))
+                .corner_radius(CornerRadius::same(6))
+                .min_size(egui::vec2(78.0, 34.0)),
+        );
+        if stop.clicked() {
+            self.stop.stop();
+            self.status = "正在停止…".to_string();
+            self.push_log("已请求停止任务。");
+        }
+
+        if ui
+            .add(
+                egui::Button::new("打开 PDF 目录")
+                    .corner_radius(CornerRadius::same(6))
+                    .min_size(egui::vec2(126.0, 34.0)),
+            )
+            .clicked()
+        {
+            self.open_pdf_dir();
+        }
+
+        ui.add_space(6.0);
+        let failed = self
+            .summary
+            .as_ref()
+            .map(|summary| !summary.failures.is_empty())
+            .unwrap_or(false);
+        status_chip(ui, palette, &self.status, self.busy, failed);
     }
 
     fn sidebar(&mut self, ctx: &egui::Context) {
         let palette = self.palette;
         egui::SidePanel::left("sidebar")
-            .exact_width(438.0)
+            .exact_width(sidebar_width(ctx))
             .resizable(false)
             .frame(
                 egui::Frame::default()
@@ -827,7 +844,7 @@ impl App {
         let palette = self.palette;
         section_title(ui, &palette, "下载类型");
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.mode, Kind::Album, "  本子  ");
             ui.selectable_value(&mut self.mode, Kind::Photo, "  章节  ");
             ui.add_space(6.0);
@@ -869,7 +886,7 @@ impl App {
             let row_width = ui.available_width();
             ui.add(
                 egui::TextEdit::singleline(&mut self.output)
-                    .desired_width((row_width - 78.0).max(120.0))
+                    .desired_width((row_width - 92.0).max(110.0))
                     .hint_text("选择下载目录"),
             );
             if ui
@@ -990,7 +1007,7 @@ impl App {
             let row_width = ui.available_width();
             ui.add(
                 egui::TextEdit::singleline(&mut self.option_path)
-                    .desired_width((row_width - 150.0).max(110.0))
+                    .desired_width((row_width - 176.0).max(96.0))
                     .hint_text("留空表示不使用"),
             );
             if ui
@@ -1164,6 +1181,12 @@ fn progress_text(snapshot: ProgressSnapshot, busy: bool) -> (f32, String) {
 fn format_duration(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// 侧栏宽度：默认 438pt；窗口较窄（高缩放）时按比例收窄，保证日志区仍可用。
+fn sidebar_width(ctx: &egui::Context) -> f32 {
+    let available = ctx.screen_rect().width();
+    (available * 0.48).clamp(360.0, 438.0)
 }
 
 fn initial_dir(output: &str) -> PathBuf {
