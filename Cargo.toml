@@ -1,0 +1,70 @@
+[package]
+name = "jmcomic-downloader-gui"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.82"
+description = "High-throughput JMComic downloader (Rust) with lossless PDF export and Windows GUI"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "jmcomic_dl"
+path = "src/lib.rs"
+
+[features]
+default = ["gui"]
+# 图形界面（eframe/egui）；纯 CLI 或服务端构建可用 --no-default-features 去掉
+gui = []
+
+[[bin]]
+name = "jmcomic-downloader-gui"
+path = "src/main.rs"
+
+[dependencies]
+# --- async runtime & HTTP ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "gzip",
+    "brotli",
+    "deflate",
+    "cookies",
+    "json",
+    "charset",
+    "http2",
+] }
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+# --- crypto / encoding ---
+md-5 = "0.10"
+aes = "0.8"
+cipher = "0.4"
+base64 = "0.22"
+# --- imaging ---
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+flate2 = "1"
+# --- text ---
+regex = "1"
+unicode-normalization = "0.1"
+# --- errors & cli ---
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+# --- 本地时间（日志时间戳）---
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# --- desktop gui ---
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.15"
+# --- 高性能分配器（图片解码/编码有大量小块分配）---
+mimalloc = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1

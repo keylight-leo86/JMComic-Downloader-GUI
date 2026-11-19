@@ -1,20 +1,12 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+# Python 历史实现已移除，仓库仅包含 Rust 代码
 
-# Virtual environments
-.venv/
-venv/
-env/
+# Rust
+/target/
+/dist/
+*.pdb
 
 # Build artifacts
 build/
-dist/
 *.spec
 *.manifest
 *.exe
@@ -50,7 +42,3 @@ settings.json
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# Release staging
-/release/
-/release-assets/

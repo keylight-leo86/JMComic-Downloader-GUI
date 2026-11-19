@@ -4,7 +4,7 @@
 
 | 版本 | 支持状态 |
 | --- | --- |
-| `1.2.x` | 支持 |
+| `2.0.x` | 支持 |
 | 其他版本 | 暂不承诺提供安全修复 |
 
 ## 报告安全漏洞
@@ -38,7 +38,8 @@
 - GUI 设置保存在 `%LOCALAPPDATA%\JMComic-Downloader-GUI\settings.json`，并兼容读取旧版设置。
 - 下载内容默认保存在程序所在目录的 `下载` 文件夹。
 - 浏览器扩展只读取当前窗口标签页的标题和 URL，用于本地筛选与复制，不会主动上传这些信息。
-- 项目不会要求用户关闭杀毒软件。Windows SmartScreen 或杀毒软件可能对未签名的 PyInstaller EXE 给出提示；请从正式 Release 下载并核对 SHA256。
+- 程序使用系统代理时会读取 Windows 的 Internet Settings 注册表项，仅用于建立网络连接。
+- 项目不会要求用户关闭杀毒软件。Windows SmartScreen 或杀毒软件可能对未签名的 EXE 给出提示；请从正式 Release 下载并核对 SHA256。
 
 ## 使用边界
 

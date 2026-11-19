@@ -1,52 +1,32 @@
-$ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath $PSScriptRoot
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+    构建 JMComic Downloader（release），并把 EXE 复制到仓库根目录。
+#>
+$ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
 
-$pythonPath = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $pythonPath)) {
-    python -m venv .venv
+$cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+if (-not (Test-Path $cargo)) {
+    $cargo = "cargo"
 }
 
-& $pythonPath -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "使用工具链：" -NoNewline
+& $cargo --version
 
-& $pythonPath -m pip install -r (Join-Path $PSScriptRoot 'requirements-release.txt')
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-& $pythonPath -m pip install -e . --no-deps
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$exeName = 'JMComic-Downloader-GUI'
-$basePrefix = & $pythonPath -c 'import sys; print(sys.base_prefix)'
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$runtimeBin = Join-Path $basePrefix 'Library\bin'
-$requiredDlls = @('liblzma.dll', 'libbz2.dll', 'ffi.dll', 'libexpat.dll', 'tk86t.dll', 'tcl86t.dll')
-$pyInstallerArgs = @(
-    '--noconfirm',
-    '--clean',
-    '--onefile',
-    '--windowed',
-    '--name', $exeName,
-    '--distpath', $PSScriptRoot,
-    '--workpath', (Join-Path $PSScriptRoot 'build'),
-    '--specpath', (Join-Path $PSScriptRoot 'build'),
-    '--collect-all', 'jmcomic',
-    '--collect-all', 'common',
-    '--collect-all', 'curl_cffi',
-    '--collect-all', 'pypdf',
-    '--collect-all', 'requests',
-    '--exclude-module', 'pikepdf',
-    '--exclude-module', 'lxml'
-)
-
-foreach ($dllName in $requiredDlls) {
-    $dllPath = Join-Path $runtimeBin $dllName
-    if (-not (Test-Path -LiteralPath $dllPath)) {
-        throw "Required runtime DLL not found: $dllPath"
-    }
-    $pyInstallerArgs += @('--add-binary', "$dllPath;.")
+& $cargo build --release
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo build 失败（退出码 $LASTEXITCODE）"
 }
 
-$pyInstallerArgs += (Join-Path $PSScriptRoot 'jmcomic_gui.py')
-& $pythonPath -m PyInstaller @pyInstallerArgs
+$source = Join-Path $PSScriptRoot "target\release\jmcomic-downloader-gui.exe"
+if (-not (Test-Path $source)) {
+    throw "未找到构建产物：$source"
+}
 
-exit $LASTEXITCODE
+$target = Join-Path $PSScriptRoot "JMComic-Downloader-GUI.exe"
+Copy-Item $source $target -Force
+
+Write-Host ""
+Write-Host "构建完成：$target"
+Write-Host "自检：& '$target' --self-test"

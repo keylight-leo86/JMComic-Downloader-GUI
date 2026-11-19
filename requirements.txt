@@ -1,8 +1,0 @@
-commonx>=0.6.38
-curl-cffi
-img2pdf
-Pillow
-pycryptodome
-pypdf
-PyYAML
-requests
